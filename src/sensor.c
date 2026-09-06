@@ -1,194 +1,136 @@
 /**
  * @file    sensor.c
- * @brief   IR wall sensor driver with ambient light compensation.
- * @author  Debosmita Paul
- * @date    2026-09-04
+ * @brief   Digital IR wall sensor driver — GPIO reads with debounce.
+ * @author  Sagnick Routh
+ * @date    2026-09-06
  *
- * 4-channel IR wall sensors:
- *   Front-Left   (PA0, ADC1_IN0)
- *   Front-Right  (PA1, ADC1_IN1)
- *   Diag-Left    (PA2, ADC1_IN2)
- *   Diag-Right   (PA3, ADC1_IN3)
+ * Reads 5 digital IR obstacle avoidance modules (FC-51 type).
+ * Each module outputs HIGH or LOW based on its onboard comparator.
+ * Calibration is done physically via each module's potentiometer.
  *
- * IR emitters driven via MOSFET on PB8 and PB9.
- *
- * Reading procedure:
- *   1. Emitter OFF → read ambient
- *   2. Emitter ON  → read reflected
- *   3. Signal = reflected - ambient
+ * No ADC, no ambient compensation, no analog thresholds — all handled
+ * on-board by the modules.
  */
 
 #include "sensor.h"
 #include "config.h"
 
-/* ── Calibration Values ─────────────────────────────────── */
-static uint16_t cal_threshold[SENSOR_COUNT] = {
-    WALL_THRESHOLD_FL,
-    WALL_THRESHOLD_FR,
-    WALL_THRESHOLD_DL,
-    WALL_THRESHOLD_DR
+/* ── Global Sensor Data ─────────────────────────────────── */
+SensorData sensor_data;
+
+/* ── GPIO Stubs (replace with real HAL) ─────────────────── */
+
+static void gpio_init_input(void *port, uint16_t pin) {
+    /* TODO: Configure pin as GPIO input with pull-up
+     * Example (HAL):
+     *   GPIO_InitTypeDef gpio = {0};
+     *   gpio.Pin = pin;
+     *   gpio.Mode = GPIO_MODE_INPUT;
+     *   gpio.Pull = GPIO_PULLUP;
+     *   HAL_GPIO_Init(port, &gpio);
+     */
+    (void)port; (void)pin;
+}
+
+static bool gpio_read(void *port, uint16_t pin) {
+    /* TODO: Replace with real HAL read
+     * return HAL_GPIO_ReadPin(port, pin) == GPIO_PIN_SET;
+     */
+    (void)port; (void)pin;
+    return false;
+}
+
+/* ── Sensor Pin Table ───────────────────────────────────── */
+typedef struct {
+    void    *port;
+    uint16_t pin;
+} SensorPin;
+
+static const SensorPin sensor_pins[SENSOR_COUNT] = {
+    { (void*)IR_LEFT_PORT,         IR_LEFT_PIN         },  /* SENSOR_LEFT */
+    { (void*)IR_FRONT_LEFT_PORT,   IR_FRONT_LEFT_PIN   },  /* SENSOR_FRONT_LEFT */
+    { (void*)IR_FRONT_CENTER_PORT, IR_FRONT_CENTER_PIN },  /* SENSOR_FRONT_CENTER */
+    { (void*)IR_FRONT_RIGHT_PORT,  IR_FRONT_RIGHT_PIN  },  /* SENSOR_FRONT_RIGHT */
+    { (void*)IR_RIGHT_PORT,        IR_RIGHT_PIN        },  /* SENSOR_RIGHT */
 };
 
-/* ── Internal Helpers ───────────────────────────────────── */
-static uint16_t adc_read_channel(uint8_t channel);
-static void     emitter_on(uint8_t group);
-static void     emitter_off(uint8_t group);
-static void     delay_us(uint32_t us);
-
 /* ── Initialization ─────────────────────────────────────── */
-void sensor_init(void)
-{
-    /*
-     * TODO: Configure PA0-PA3 as analog inputs.
-     * TODO: Configure ADC1 with channels 0-3.
-     * TODO: Configure PB8, PB9 as GPIO outputs (IR emitter enable).
-     */
+void sensor_init(void) {
+    for (int i = 0; i < SENSOR_COUNT; i++) {
+        gpio_init_input(sensor_pins[i].port, sensor_pins[i].pin);
+        sensor_data.wall[i] = false;
+    }
+    sensor_data.wall_left  = false;
+    sensor_data.wall_right = false;
+    sensor_data.wall_front = false;
+}
 
-    emitter_off(0);
-    emitter_off(1);
+/* ── Read Single Sensor with Debounce ───────────────────── */
+static bool sensor_read_single(SensorPosition pos) {
+    uint8_t count = 0;
+    for (int i = 0; i < IR_DEBOUNCE_SAMPLES; i++) {
+        bool raw = gpio_read(sensor_pins[pos].port, sensor_pins[pos].pin);
+        #if IR_ACTIVE_LOW
+            if (!raw) count++;   /* LOW = wall detected */
+        #else
+            if (raw)  count++;   /* HIGH = wall detected */
+        #endif
+    }
+    /* Majority vote */
+    return (count > (IR_DEBOUNCE_SAMPLES / 2));
 }
 
 /* ── Read All Sensors ───────────────────────────────────── */
-void sensor_read_all(SensorData *data)
-{
-    if (data == (void *)0) return;
-
-    uint16_t ambient[SENSOR_COUNT];
-    uint16_t active[SENSOR_COUNT];
-
-    /* Step 1: Read ambient (emitters OFF) */
-    emitter_off(0);
-    emitter_off(1);
-    delay_us(50);
-
-    ambient[SENSOR_FRONT_LEFT]  = adc_read_channel(0);
-    ambient[SENSOR_FRONT_RIGHT] = adc_read_channel(1);
-    ambient[SENSOR_DIAG_LEFT]   = adc_read_channel(2);
-    ambient[SENSOR_DIAG_RIGHT]  = adc_read_channel(3);
-
-    /* Step 2: Read with front emitters ON */
-    emitter_on(0);
-    delay_us(100);
-
-    active[SENSOR_FRONT_LEFT]  = adc_read_channel(0);
-    active[SENSOR_FRONT_RIGHT] = adc_read_channel(1);
-
-    emitter_off(0);
-
-    /* Step 3: Read with diagonal emitters ON */
-    emitter_on(1);
-    delay_us(100);
-
-    active[SENSOR_DIAG_LEFT]  = adc_read_channel(2);
-    active[SENSOR_DIAG_RIGHT] = adc_read_channel(3);
-
-    emitter_off(1);
-
-    /* Step 4: Compute filtered signal */
+void sensor_read_all(void) {
     for (int i = 0; i < SENSOR_COUNT; i++) {
-        data->raw[i] = active[i];
-
-        if (active[i] > ambient[i]) {
-            data->filtered[i] = active[i] - ambient[i];
-        } else {
-            data->filtered[i] = 0;
-        }
-
-        data->wall_detected[i] = (data->filtered[i] > cal_threshold[i]);
-    }
-}
-
-/* ── Wall Detection Helpers ─────────────────────────────── */
-bool sensor_front_wall(const SensorData *data)
-{
-    return data->wall_detected[SENSOR_FRONT_LEFT] &&
-           data->wall_detected[SENSOR_FRONT_RIGHT];
-}
-
-bool sensor_left_wall(const SensorData *data)
-{
-    return data->wall_detected[SENSOR_DIAG_LEFT];
-}
-
-bool sensor_right_wall(const SensorData *data)
-{
-    return data->wall_detected[SENSOR_DIAG_RIGHT];
-}
-
-/* ── Wall Following Error ───────────────────────────────── */
-int16_t sensor_get_wall_error(const SensorData *data)
-{
-    bool has_left  = data->wall_detected[SENSOR_DIAG_LEFT];
-    bool has_right = data->wall_detected[SENSOR_DIAG_RIGHT];
-
-    if (has_left && has_right) {
-        /* Both walls: error = left - right (centered when equal) */
-        return (int16_t)data->filtered[SENSOR_DIAG_LEFT] -
-               (int16_t)data->filtered[SENSOR_DIAG_RIGHT];
-    }
-    else if (has_left) {
-        /* Left wall only: error relative to setpoint */
-        return (int16_t)data->filtered[SENSOR_DIAG_LEFT] -
-               (int16_t)WALL_SETPOINT_LEFT;
-    }
-    else if (has_right) {
-        /* Right wall only: inverted error relative to setpoint */
-        return (int16_t)WALL_SETPOINT_RIGHT -
-               (int16_t)data->filtered[SENSOR_DIAG_RIGHT];
+        sensor_data.wall[i] = sensor_read_single((SensorPosition)i);
     }
 
-    /* No walls detected — no correction */
-    return 0;
+    /* Convenience flags */
+    sensor_data.wall_left  = sensor_data.wall[SENSOR_LEFT];
+    sensor_data.wall_right = sensor_data.wall[SENSOR_RIGHT];
+
+    /* Front wall = any front sensor triggered */
+    sensor_data.wall_front = sensor_data.wall[SENSOR_FRONT_LEFT]  ||
+                             sensor_data.wall[SENSOR_FRONT_CENTER] ||
+                             sensor_data.wall[SENSOR_FRONT_RIGHT];
 }
 
-/* ── Calibration ────────────────────────────────────────── */
-void sensor_calibrate(void)
-{
-    /*
-     * TODO: Advanced calibration procedure:
-     * 1. Place robot in a known cell (walls on both sides).
-     * 2. Read sensor values at known distances.
-     * 3. Store calibrated thresholds and setpoints.
-     *
-     * For now, using compile-time defaults from config.h.
-     */
+/* ── Convenience Getters ────────────────────────────────── */
+const SensorData* sensor_get_data(void) {
+    return &sensor_data;
 }
 
-/* ── Internal: ADC Read ─────────────────────────────────── */
-static uint16_t adc_read_channel(uint8_t channel)
-{
-    (void)channel;
-    /*
-     * TODO: Configure ADC1 to read the specified channel.
-     * TODO: Start conversion and wait for completion.
-     * return HAL_ADC_GetValue(&hadc1);
-     */
-    return 0; /* placeholder */
-}
+bool sensor_front_wall(void) { return sensor_data.wall_front; }
+bool sensor_left_wall(void)  { return sensor_data.wall_left;  }
+bool sensor_right_wall(void) { return sensor_data.wall_right; }
 
-/* ── Internal: Emitter Control ──────────────────────────── */
-static void emitter_on(uint8_t group)
-{
-    if (group == 0) {
-        /* TODO: HAL_GPIO_WritePin(IR_EMITTER_1_PORT, IR_EMITTER_1_PIN, GPIO_PIN_SET); */
-    } else {
-        /* TODO: HAL_GPIO_WritePin(IR_EMITTER_2_PORT, IR_EMITTER_2_PIN, GPIO_PIN_SET); */
+/* ── Convert Relative Walls to Absolute ─────────────────── */
+uint8_t sensor_to_absolute_walls(Direction facing) {
+    uint8_t walls = 0;
+
+    /* Map relative L/F/R to absolute N/E/S/W based on heading */
+    switch (facing) {
+        case DIR_NORTH:
+            if (sensor_data.wall_front) walls |= WALL_NORTH;
+            if (sensor_data.wall_left)  walls |= WALL_WEST;
+            if (sensor_data.wall_right) walls |= WALL_EAST;
+            break;
+        case DIR_EAST:
+            if (sensor_data.wall_front) walls |= WALL_EAST;
+            if (sensor_data.wall_left)  walls |= WALL_NORTH;
+            if (sensor_data.wall_right) walls |= WALL_SOUTH;
+            break;
+        case DIR_SOUTH:
+            if (sensor_data.wall_front) walls |= WALL_SOUTH;
+            if (sensor_data.wall_left)  walls |= WALL_EAST;
+            if (sensor_data.wall_right) walls |= WALL_WEST;
+            break;
+        case DIR_WEST:
+            if (sensor_data.wall_front) walls |= WALL_WEST;
+            if (sensor_data.wall_left)  walls |= WALL_SOUTH;
+            if (sensor_data.wall_right) walls |= WALL_NORTH;
+            break;
     }
-}
-
-static void emitter_off(uint8_t group)
-{
-    if (group == 0) {
-        /* TODO: HAL_GPIO_WritePin(IR_EMITTER_1_PORT, IR_EMITTER_1_PIN, GPIO_PIN_RESET); */
-    } else {
-        /* TODO: HAL_GPIO_WritePin(IR_EMITTER_2_PORT, IR_EMITTER_2_PIN, GPIO_PIN_RESET); */
-    }
-}
-
-static void delay_us(uint32_t us)
-{
-    volatile uint32_t i;
-    for (i = 0; i < us * 8; i++) {
-        __asm__("nop");
-    }
+    return walls;
 }

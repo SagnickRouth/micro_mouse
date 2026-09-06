@@ -1,114 +1,87 @@
 /**
  * @file    motor.c
- * @brief   Motor driver implementation for TB6612FNG.
- * @author  Debosmita Paul
- * @date    2026-09-04
+ * @brief   Motor driver for TB6612FNG dual H-bridge.
+ * @author  Sagnick Routh
+ * @date    2026-09-06
  *
- * Controls two DC motors via TB6612FNG H-bridge.
- * PWM generated on TIM1 CH1 (left) and CH2 (right).
+ * Pin mapping:
+ *   PA8  → PWMA (TIM1_CH1) — Left motor
+ *   PA11 → PWMB (TIM1_CH4) — Right motor
+ *   PB12/PB13 → AIN1/AIN2  — Left direction
+ *   PB14/PB15 → BIN1/BIN2  — Right direction
+ *   PA15 → STBY            — Standby (enable/disable)
  */
 
 #include "motor.h"
 #include "config.h"
 
-/*
- * NOTE: This implementation uses pseudo-register access as a reference.
- * Replace with actual STM32 HAL or LL calls for your project.
- */
+/* ── GPIO/PWM Stubs (replace with real HAL) ─────────────── */
 
-/* ── Initialization ─────────────────────────────────────── */
-void motor_init(void)
-{
-    /*
-     * TODO: Initialize GPIO pins as outputs:
-     *   PB12 (AIN1), PB13 (AIN2) — left motor direction
-     *   PB14 (BIN1), PB15 (BIN2) — right motor direction
-     *   PB5  (STBY)              — standby control
-     *
-     * TODO: Initialize TIM1 in PWM mode:
-     *   CH1 (PA8) — left motor PWM
-     *   CH2 (PA9) — right motor PWM
-     *   Period: 999 (for 72kHz PWM at 72MHz clock with prescaler=0)
-     */
-
-    /* Start with motors disabled */
-    motor_disable();
+static void gpio_write(void *port, uint16_t pin, bool state) {
+    /* TODO: HAL_GPIO_WritePin(port, pin, state ? GPIO_PIN_SET : GPIO_PIN_RESET); */
+    (void)port; (void)pin; (void)state;
 }
 
-/* ── Set Motor Speed & Direction ────────────────────────── */
-void motor_set(MotorId motor, MotorDirection dir, uint16_t pwm)
-{
-    /* Clamp PWM to valid range */
-    if (pwm > 999) {
-        pwm = 999;
-    }
+static void pwm_set(uint8_t channel, uint16_t value) {
+    /* TODO: __HAL_TIM_SET_COMPARE(&htim1, channel, value); */
+    (void)channel; (void)value;
+}
 
-    if (motor == MOTOR_LEFT) {
-        switch (dir) {
-            case MOTOR_FORWARD:
-                /* AIN1 = HIGH, AIN2 = LOW */
-                /* TODO: HAL_GPIO_WritePin(MOTOR_L_IN1_PORT, MOTOR_L_IN1_PIN, GPIO_PIN_SET);   */
-                /* TODO: HAL_GPIO_WritePin(MOTOR_L_IN2_PORT, MOTOR_L_IN2_PIN, GPIO_PIN_RESET); */
-                break;
-            case MOTOR_BACKWARD:
-                /* AIN1 = LOW, AIN2 = HIGH */
-                /* TODO: HAL_GPIO_WritePin(MOTOR_L_IN1_PORT, MOTOR_L_IN1_PIN, GPIO_PIN_RESET); */
-                /* TODO: HAL_GPIO_WritePin(MOTOR_L_IN2_PORT, MOTOR_L_IN2_PIN, GPIO_PIN_SET);   */
-                break;
-            case MOTOR_BRAKE:
-                /* AIN1 = HIGH, AIN2 = HIGH */
-                /* TODO: HAL_GPIO_WritePin(MOTOR_L_IN1_PORT, MOTOR_L_IN1_PIN, GPIO_PIN_SET); */
-                /* TODO: HAL_GPIO_WritePin(MOTOR_L_IN2_PORT, MOTOR_L_IN2_PIN, GPIO_PIN_SET); */
-                break;
-            case MOTOR_COAST:
-                /* AIN1 = LOW, AIN2 = LOW */
-                /* TODO: HAL_GPIO_WritePin(MOTOR_L_IN1_PORT, MOTOR_L_IN1_PIN, GPIO_PIN_RESET); */
-                /* TODO: HAL_GPIO_WritePin(MOTOR_L_IN2_PORT, MOTOR_L_IN2_PIN, GPIO_PIN_RESET); */
-                break;
-        }
-        /* Set PWM duty on TIM1_CH1 */
-        /* TODO: __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm); */
+/* ── Initialization ─────────────────────────────────────── */
+void motor_init(void) {
+    /* TODO: Configure GPIO pins for AIN1/AIN2/BIN1/BIN2/STBY as outputs
+     *       Configure TIM1 CH1 and CH4 as PWM output (~20kHz)
+     *       Start PWM: HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1/4);
+     */
+    motor_disable();
+    motor_brake();
+}
+
+/* ── Set Motor Speed ────────────────────────────────────── */
+void motor_set_left(int16_t speed) {
+    if (speed > MOTOR_PWM_MAX)  speed = MOTOR_PWM_MAX;
+    if (speed < -MOTOR_PWM_MAX) speed = -MOTOR_PWM_MAX;
+
+    if (speed > 0) {
+        gpio_write(MOTOR_AIN1_PORT, MOTOR_AIN1_PIN, true);
+        gpio_write(MOTOR_AIN2_PORT, MOTOR_AIN2_PIN, false);
+        pwm_set(1, (uint16_t)speed);   /* TIM1_CH1 */
+    } else if (speed < 0) {
+        gpio_write(MOTOR_AIN1_PORT, MOTOR_AIN1_PIN, false);
+        gpio_write(MOTOR_AIN2_PORT, MOTOR_AIN2_PIN, true);
+        pwm_set(1, (uint16_t)(-speed));
+    } else {
+        gpio_write(MOTOR_AIN1_PORT, MOTOR_AIN1_PIN, false);
+        gpio_write(MOTOR_AIN2_PORT, MOTOR_AIN2_PIN, false);
+        pwm_set(1, 0);
     }
-    else { /* MOTOR_RIGHT */
-        switch (dir) {
-            case MOTOR_FORWARD:
-                /* TODO: HAL_GPIO_WritePin(MOTOR_R_IN1_PORT, MOTOR_R_IN1_PIN, GPIO_PIN_SET);   */
-                /* TODO: HAL_GPIO_WritePin(MOTOR_R_IN2_PORT, MOTOR_R_IN2_PIN, GPIO_PIN_RESET); */
-                break;
-            case MOTOR_BACKWARD:
-                /* TODO: HAL_GPIO_WritePin(MOTOR_R_IN1_PORT, MOTOR_R_IN1_PIN, GPIO_PIN_RESET); */
-                /* TODO: HAL_GPIO_WritePin(MOTOR_R_IN2_PORT, MOTOR_R_IN2_PIN, GPIO_PIN_SET);   */
-                break;
-            case MOTOR_BRAKE:
-                /* TODO: HAL_GPIO_WritePin(MOTOR_R_IN1_PORT, MOTOR_R_IN1_PIN, GPIO_PIN_SET); */
-                /* TODO: HAL_GPIO_WritePin(MOTOR_R_IN2_PORT, MOTOR_R_IN2_PIN, GPIO_PIN_SET); */
-                break;
-            case MOTOR_COAST:
-                /* TODO: HAL_GPIO_WritePin(MOTOR_R_IN1_PORT, MOTOR_R_IN1_PIN, GPIO_PIN_RESET); */
-                /* TODO: HAL_GPIO_WritePin(MOTOR_R_IN2_PORT, MOTOR_R_IN2_PIN, GPIO_PIN_RESET); */
-                break;
-        }
-        /* Set PWM duty on TIM1_CH2 */
-        /* TODO: __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, pwm); */
+}
+
+void motor_set_right(int16_t speed) {
+    if (speed > MOTOR_PWM_MAX)  speed = MOTOR_PWM_MAX;
+    if (speed < -MOTOR_PWM_MAX) speed = -MOTOR_PWM_MAX;
+
+    if (speed > 0) {
+        gpio_write(MOTOR_BIN1_PORT, MOTOR_BIN1_PIN, true);
+        gpio_write(MOTOR_BIN2_PORT, MOTOR_BIN2_PIN, false);
+        pwm_set(4, (uint16_t)speed);   /* TIM1_CH4 */
+    } else if (speed < 0) {
+        gpio_write(MOTOR_BIN1_PORT, MOTOR_BIN1_PIN, false);
+        gpio_write(MOTOR_BIN2_PORT, MOTOR_BIN2_PIN, true);
+        pwm_set(4, (uint16_t)(-speed));
+    } else {
+        gpio_write(MOTOR_BIN1_PORT, MOTOR_BIN1_PIN, false);
+        gpio_write(MOTOR_BIN2_PORT, MOTOR_BIN2_PIN, false);
+        pwm_set(4, 0);
     }
 }
 
 /* ── Enable / Disable ───────────────────────────────────── */
-void motor_enable(void)
-{
-    /* STBY = HIGH */
-    /* TODO: HAL_GPIO_WritePin(MOTOR_STBY_PORT, MOTOR_STBY_PIN, GPIO_PIN_SET); */
-}
+void motor_enable(void)  { gpio_write(MOTOR_STBY_PORT, MOTOR_STBY_PIN, true);  }
+void motor_disable(void) { gpio_write(MOTOR_STBY_PORT, MOTOR_STBY_PIN, false); }
 
-void motor_disable(void)
-{
-    /* STBY = LOW */
-    /* TODO: HAL_GPIO_WritePin(MOTOR_STBY_PORT, MOTOR_STBY_PIN, GPIO_PIN_RESET); */
-}
-
-/* ── Brake Both Motors ──────────────────────────────────── */
-void motor_brake(void)
-{
-    motor_set(MOTOR_LEFT,  MOTOR_BRAKE, 999);
-    motor_set(MOTOR_RIGHT, MOTOR_BRAKE, 999);
+/* ── Brake ──────────────────────────────────────────────── */
+void motor_brake(void) {
+    motor_set_left(0);
+    motor_set_right(0);
 }

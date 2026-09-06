@@ -1,6 +1,9 @@
 /**
  * @file    sensor.h
- * @brief   IR wall sensor driver and calibration.
+ * @brief   Digital IR wall sensor driver (GPIO, binary output).
+ *
+ * ARCHITECTURE: Sensors provide ONLY wall presence (true/false).
+ * No analog distance data. Navigation uses gyro + encoders instead.
  */
 
 #ifndef SENSOR_H
@@ -10,68 +13,46 @@
 extern "C" {
 #endif
 
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 
-/** @brief Sensor channel identifiers. */
+/** Sensor positions */
 typedef enum {
-    SENSOR_FRONT_LEFT,
-    SENSOR_FRONT_RIGHT,
-    SENSOR_DIAG_LEFT,
-    SENSOR_DIAG_RIGHT,
-    SENSOR_COUNT
-} SensorChannel;
+    SENSOR_LEFT         = 0,
+    SENSOR_FRONT_LEFT   = 1,
+    SENSOR_FRONT_CENTER = 2,
+    SENSOR_FRONT_RIGHT  = 3,
+    SENSOR_RIGHT        = 4,
+    SENSOR_COUNT        = 5
+} SensorPosition;
 
-/** @brief Processed sensor readings. */
+/** Sensor data (all binary) */
 typedef struct {
-    uint16_t raw[SENSOR_COUNT];         /**< Raw ADC values                */
-    uint16_t filtered[SENSOR_COUNT];    /**< Filtered (ambient-compensated)*/
-    bool     wall_detected[SENSOR_COUNT]; /**< Wall present flags          */
+    bool wall[SENSOR_COUNT];     /* true = wall detected */
+    bool wall_left;              /* Convenience: left wall */
+    bool wall_right;             /* Convenience: right wall */
+    bool wall_front;             /* Convenience: front wall (any front sensor) */
 } SensorData;
 
-/**
- * @brief  Initialize ADC and IR emitter GPIO.
- */
+/** Initialize GPIO pins for all 5 IR sensor modules. */
 void sensor_init(void);
 
-/**
- * @brief  Read all sensors with ambient compensation.
- * @param[out] data  Pointer to SensorData struct to fill.
- */
-void sensor_read_all(SensorData *data);
+/** Read all 5 sensors with debouncing. Updates global sensor_data. */
+void sensor_read_all(void);
 
-/**
- * @brief  Check if front wall is present.
- * @param  data  Pointer to current sensor data.
- * @return true if front wall detected.
- */
-bool sensor_front_wall(const SensorData *data);
+/** Get current sensor data (last read). */
+const SensorData* sensor_get_data(void);
 
-/**
- * @brief  Check if left wall is present.
- * @param  data  Pointer to current sensor data.
- * @return true if left wall detected.
- */
-bool sensor_left_wall(const SensorData *data);
+/** Individual wall queries (use after sensor_read_all). */
+bool sensor_front_wall(void);
+bool sensor_left_wall(void);
+bool sensor_right_wall(void);
 
-/**
- * @brief  Check if right wall is present.
- * @param  data  Pointer to current sensor data.
- * @return true if right wall detected.
- */
-bool sensor_right_wall(const SensorData *data);
+/** Convert relative wall flags (L/F/R) to absolute walls based on heading. */
+uint8_t sensor_to_absolute_walls(Direction facing);
 
-/**
- * @brief  Get wall-following error for PID correction.
- * @param  data  Pointer to current sensor data.
- * @return Signed error value (negative = too far left).
- */
-int16_t sensor_get_wall_error(const SensorData *data);
-
-/**
- * @brief  Calibrate sensor thresholds. Place robot in known position.
- */
-void sensor_calibrate(void);
+/* Global sensor data */
+extern SensorData sensor_data;
 
 #ifdef __cplusplus
 }

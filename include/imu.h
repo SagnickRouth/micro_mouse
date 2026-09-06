@@ -1,6 +1,9 @@
 /**
  * @file    imu.h
- * @brief   MPU6050 IMU driver (I2C).
+ * @brief   MPU6050 IMU driver (I2C) — gyro yaw integration.
+ *
+ * Provides yaw angle for heading-hold and turn control.
+ * This is the PRIMARY navigation sensor in the gyro-primary architecture.
  */
 
 #ifndef IMU_H
@@ -10,48 +13,42 @@
 extern "C" {
 #endif
 
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 
-/** @brief IMU data structure. */
+/** IMU data structure */
 typedef struct {
-    int16_t accel_x;    /**< Accelerometer X (raw)  */
-    int16_t accel_y;    /**< Accelerometer Y (raw)  */
-    int16_t accel_z;    /**< Accelerometer Z (raw)  */
-    int16_t gyro_x;     /**< Gyroscope X (raw)      */
-    int16_t gyro_y;     /**< Gyroscope Y (raw)      */
-    int16_t gyro_z;     /**< Gyroscope Z (raw)      */
-    float   yaw;        /**< Integrated yaw (deg)   */
-    float   yaw_rate;   /**< Yaw rate (deg/s)       */
+    int16_t accel_x, accel_y, accel_z;
+    int16_t gyro_x,  gyro_y,  gyro_z;
+    float   yaw_rate;     /* Degrees/second (bias-corrected) */
+    float   yaw_angle;    /* Integrated yaw (degrees) */
+    float   gyro_z_bias;  /* Calibrated bias */
+    int16_t temperature;
 } ImuData;
 
-/**
- * @brief  Initialize MPU6050 over I2C2.
- * @return true on success, false if device not found.
- */
+/** Initialize MPU6050 over I2C. Returns true on success. */
 bool imu_init(void);
 
-/**
- * @brief  Read all IMU axes and update yaw integration.
- * @param[out] data  Pointer to ImuData struct.
- */
-void imu_read(ImuData *data);
+/** Read accelerometer + gyroscope data, integrate yaw. */
+void imu_read(void);
 
-/**
- * @brief  Reset integrated yaw angle to zero.
- */
-void imu_reset_yaw(void);
+/** Calibrate gyro bias (robot must be stationary). */
+void imu_calibrate(void);
 
-/**
- * @brief  Get current integrated yaw angle.
- * @return Yaw in degrees.
- */
+/** Get current integrated yaw angle (degrees). */
 float imu_get_yaw(void);
 
-/**
- * @brief  Calibrate gyroscope bias. Robot must be stationary.
- */
-void imu_calibrate(void);
+/** Reset yaw angle to zero. */
+void imu_reset_yaw(void);
+
+/** Set yaw to a specific value (for front-wall squaring). */
+void imu_set_yaw(float yaw_deg);
+
+/** Get raw IMU data. */
+const ImuData* imu_get_data(void);
+
+/* Global IMU data */
+extern ImuData imu_data;
 
 #ifdef __cplusplus
 }

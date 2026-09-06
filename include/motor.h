@@ -12,46 +12,22 @@ extern "C" {
 
 #include <stdint.h>
 
-/** @brief Motor identifier. */
-typedef enum {
-    MOTOR_LEFT,
-    MOTOR_RIGHT
-} MotorId;
-
-/** @brief Motor direction. */
-typedef enum {
-    MOTOR_FORWARD,
-    MOTOR_BACKWARD,
-    MOTOR_BRAKE,
-    MOTOR_COAST
-} MotorDirection;
-
-/**
- * @brief  Initialize motor driver GPIO and PWM timers.
- */
+/** Initialize motor GPIO and PWM (TIM1). */
 void motor_init(void);
 
-/**
- * @brief  Set motor speed and direction.
- * @param  motor   MOTOR_LEFT or MOTOR_RIGHT.
- * @param  dir     Desired direction.
- * @param  pwm     PWM duty (0–999).
- */
-void motor_set(MotorId motor, MotorDirection dir, uint16_t pwm);
+/** Set left motor speed. Positive = forward, negative = backward. */
+void motor_set_left(int16_t speed);
 
-/**
- * @brief  Enable motor driver (STBY HIGH).
- */
+/** Set right motor speed. Positive = forward, negative = backward. */
+void motor_set_right(int16_t speed);
+
+/** Enable motor driver (STBY high). */
 void motor_enable(void);
 
-/**
- * @brief  Disable motor driver (STBY LOW, coast mode).
- */
+/** Disable motor driver (STBY low). */
 void motor_disable(void);
 
-/**
- * @brief  Brake both motors immediately.
- */
+/** Brake both motors (short both H-bridges). */
 void motor_brake(void);
 
 #ifdef __cplusplus

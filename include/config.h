@@ -1,8 +1,21 @@
 /**
  * @file    config.h
  * @brief   Global configuration, pin definitions, and tuning constants.
- * @author  Debosmita Paul
- * @date    2026-09-04
+ * @author  Sagnick Routh (adapted for digital IR + gyro-primary architecture)
+ * @date    2026-09-06
+ *
+ * HARDWARE:
+ *   - STM32F103C8T6 (Blue Pill) — 72MHz
+ *   - TB6612FNG motor driver
+ *   - 2x N20 gear motors with quadrature encoders
+ *   - 5x digital IR obstacle avoidance modules (GPIO, HIGH/LOW)
+ *   - MPU6050 IMU (I2C)
+ *   - Misc: switches, LED, slide switch
+ *
+ * ARCHITECTURE: Gyro-primary navigation
+ *   - MPU6050 gyro for heading hold (straight-line + turns)
+ *   - Encoders for distance measurement
+ *   - Digital IR sensors for binary wall detection (maze mapping only)
  */
 
 #ifndef CONFIG_H
@@ -13,118 +26,209 @@ extern "C" {
 #endif
 
 #include <stdint.h>
+#include <stdbool.h>
 
-/* ── Maze Configuration ─────────────────────────────────── */
-#define MAZE_SIZE           16      /**< Maze grid dimension (16×16)       */
-#define CELL_SIZE_MM        180     /**< Cell size in mm (18 cm)           */
-#define GOAL_X_MIN          7       /**< Goal area X start                 */
-#define GOAL_X_MAX          8       /**< Goal area X end                   */
-#define GOAL_Y_MIN          7       /**< Goal area Y start                 */
-#define GOAL_Y_MAX          8       /**< Goal area Y end                   */
+/* ── Maze Constants ─────────────────────────────────────── */
+#define MAZE_SIZE           16
+#define CELL_SIZE_MM        180
+#define GOAL_MIN            7
+#define GOAL_MAX            8
 
-/* ── Wall Bit Masks ─────────────────────────────────────── */
-#define WALL_N              0x01
-#define WALL_E              0x02
-#define WALL_S              0x04
-#define WALL_W              0x08
+/* Wall bitmask encoding */
+#define WALL_NORTH          0x01
+#define WALL_EAST           0x02
+#define WALL_SOUTH          0x04
+#define WALL_WEST           0x08
 #define CELL_VISITED        0x10
 
+/* ── Direction Enum ─────────────────────────────────────── */
+typedef enum {
+    DIR_NORTH = 0,
+    DIR_EAST  = 1,
+    DIR_SOUTH = 2,
+    DIR_WEST  = 3
+} Direction;
+
+/* ── Robot State ────────────────────────────────────────── */
+typedef enum {
+    STATE_IDLE = 0,
+    STATE_CALIBRATE,
+    STATE_SEARCH_RUN,
+    STATE_RETURN_START,
+    STATE_SPEED_RUN,
+    STATE_ERROR
+} RobotState;
+
 /* ── Motor Pins (TB6612FNG) ─────────────────────────────── */
-#define MOTOR_L_PWM_PIN     GPIO_PIN_8   /* PA8  — TIM1_CH1  */
-#define MOTOR_L_PWM_PORT    GPIOA
-#define MOTOR_L_IN1_PIN     GPIO_PIN_12  /* PB12 — AIN1      */
-#define MOTOR_L_IN1_PORT    GPIOB
-#define MOTOR_L_IN2_PIN     GPIO_PIN_13  /* PB13 — AIN2      */
-#define MOTOR_L_IN2_PORT    GPIOB
+/* PWM via TIM1 */
+#define MOTOR_PWMA_PORT     GPIOA
+#define MOTOR_PWMA_PIN      GPIO_PIN_8       /* PA8  = TIM1_CH1 (Left) */
+#define MOTOR_PWMB_PORT     GPIOA
+#define MOTOR_PWMB_PIN      GPIO_PIN_11      /* PA11 = TIM1_CH4 (Right) */
 
-#define MOTOR_R_PWM_PIN     GPIO_PIN_9   /* PA9  — TIM1_CH2  */
-#define MOTOR_R_PWM_PORT    GPIOA
-#define MOTOR_R_IN1_PIN     GPIO_PIN_14  /* PB14 — BIN1      */
-#define MOTOR_R_IN1_PORT    GPIOB
-#define MOTOR_R_IN2_PIN     GPIO_PIN_15  /* PB15 — BIN2      */
-#define MOTOR_R_IN2_PORT    GPIOB
+/* Direction control */
+#define MOTOR_AIN1_PORT     GPIOB
+#define MOTOR_AIN1_PIN      GPIO_PIN_12      /* PB12 */
+#define MOTOR_AIN2_PORT     GPIOB
+#define MOTOR_AIN2_PIN      GPIO_PIN_13      /* PB13 */
+#define MOTOR_BIN1_PORT     GPIOB
+#define MOTOR_BIN1_PIN      GPIO_PIN_14      /* PB14 */
+#define MOTOR_BIN2_PORT     GPIOB
+#define MOTOR_BIN2_PIN      GPIO_PIN_15      /* PB15 */
 
-#define MOTOR_STBY_PIN      GPIO_PIN_5   /* PB5  — STBY      */
-#define MOTOR_STBY_PORT     GPIOB
+/* Standby */
+#define MOTOR_STBY_PORT     GPIOA
+#define MOTOR_STBY_PIN      GPIO_PIN_15      /* PA15 */
 
-/* ── Encoder Pins ───────────────────────────────────────── */
-#define ENC_L_A_PIN         GPIO_PIN_6   /* PA6  — TIM3_CH1  */
-#define ENC_L_B_PIN         GPIO_PIN_7   /* PA7  — TIM3_CH2  */
-#define ENC_R_A_PIN         GPIO_PIN_6   /* PB6  — TIM4_CH1  */
-#define ENC_R_B_PIN         GPIO_PIN_7   /* PB7  — TIM4_CH2  */
+/* Motor constants */
+#define MOTOR_PWM_MAX       999
+#define MOTOR_PWM_FREQ      20000            /* 20kHz (above audible) */
 
-/* ── Encoder Constants ──────────────────────────────────── */
-#define ENCODER_CPR         12      /**< Counts per motor revolution       */
-#define GEAR_RATIO          100     /**< Motor gear ratio                  */
-#define WHEEL_DIAMETER_MM   25      /**< Wheel diameter in mm              */
-#define WHEEL_TRACK_MM      75      /**< Distance between wheel centers    */
-#define TICKS_PER_REV       (ENCODER_CPR * GEAR_RATIO)  /**< Total ticks per wheel rev */
+/* ── Encoder Pins (Hardware Timer Encoder Mode) ─────────── */
+/* LEFT encoder: TIM2 CH1/CH2 */
+#define ENC_LEFT_A_PORT     GPIOA
+#define ENC_LEFT_A_PIN      GPIO_PIN_0       /* PA0 = TIM2_CH1 */
+#define ENC_LEFT_B_PORT     GPIOA
+#define ENC_LEFT_B_PIN      GPIO_PIN_1       /* PA1 = TIM2_CH2 */
 
-/* ── IR Sensor Pins (ADC) ───────────────────────────────── */
-#define SENSOR_FL_PIN       GPIO_PIN_0   /* PA0  — ADC1_IN0  */
-#define SENSOR_FR_PIN       GPIO_PIN_1   /* PA1  — ADC1_IN1  */
-#define SENSOR_DL_PIN       GPIO_PIN_2   /* PA2  — ADC1_IN2  */
-#define SENSOR_DR_PIN       GPIO_PIN_3   /* PA3  — ADC1_IN3  */
+/* RIGHT encoder: TIM3 CH1/CH2 */
+#define ENC_RIGHT_A_PORT    GPIOA
+#define ENC_RIGHT_A_PIN     GPIO_PIN_6       /* PA6 = TIM3_CH1 */
+#define ENC_RIGHT_B_PORT    GPIOA
+#define ENC_RIGHT_B_PIN     GPIO_PIN_7       /* PA7 = TIM3_CH2 */
 
-#define IR_EMITTER_1_PIN    GPIO_PIN_8   /* PB8              */
-#define IR_EMITTER_1_PORT   GPIOB
-#define IR_EMITTER_2_PIN    GPIO_PIN_9   /* PB9              */
-#define IR_EMITTER_2_PORT   GPIOB
+/* Encoder physical constants */
+#define ENCODER_CPR             12           /* Counts per revolution (motor shaft) */
+#define ENCODER_GEAR_RATIO      100          /* Gear reduction */
+#define ENCODER_TICKS_PER_REV   (ENCODER_CPR * ENCODER_GEAR_RATIO) /* 1200 */
+#define WHEEL_DIAMETER_MM       25.0f
+#define WHEEL_TRACK_MM          75.0f        /* Distance between wheels */
+#define MM_PER_TICK             ((3.14159f * WHEEL_DIAMETER_MM) / ENCODER_TICKS_PER_REV)
 
-/* ── IR Sensor Thresholds ───────────────────────────────── */
-#define WALL_THRESHOLD_FL   800     /**< Front-left wall detection         */
-#define WALL_THRESHOLD_FR   800     /**< Front-right wall detection        */
-#define WALL_THRESHOLD_DL   600     /**< Diagonal-left wall detection      */
-#define WALL_THRESHOLD_DR   600     /**< Diagonal-right wall detection     */
-#define FRONT_STOP_VALUE    2500    /**< Front wall stopping distance      */
+/* ── IR Sensors (5x DIGITAL GPIO — NO ADC) ──────────────── */
+/*
+ * ARCHITECTURE NOTE:
+ *   These sensors output binary HIGH/LOW only.
+ *   They are used ONLY for wall-presence detection (maze mapping).
+ *   Straight-line control uses the MPU6050 gyro instead.
+ *
+ * FC-51 modules typically output LOW when obstacle detected.
+ * Set IR_ACTIVE_LOW to 1 if your modules are active-low.
+ */
+#define IR_ACTIVE_LOW           1            /* 1 = LOW means wall, 0 = HIGH means wall */
 
-/* ── Wall Following Setpoints ───────────────────────────── */
-#define WALL_SETPOINT_LEFT  1200    /**< Target ADC for left wall center   */
-#define WALL_SETPOINT_RIGHT 1200    /**< Target ADC for right wall center  */
+#define IR_LEFT_PORT            GPIOB
+#define IR_LEFT_PIN             GPIO_PIN_0   /* PB0 */
+#define IR_FRONT_LEFT_PORT      GPIOB
+#define IR_FRONT_LEFT_PIN       GPIO_PIN_1   /* PB1 */
+#define IR_FRONT_CENTER_PORT    GPIOB
+#define IR_FRONT_CENTER_PIN     GPIO_PIN_3   /* PB3 */
+#define IR_FRONT_RIGHT_PORT     GPIOB
+#define IR_FRONT_RIGHT_PIN      GPIO_PIN_4   /* PB4 */
+#define IR_RIGHT_PORT           GPIOB
+#define IR_RIGHT_PIN            GPIO_PIN_5   /* PB5 */
 
-/* ── IMU (MPU6050) ──────────────────────────────────────── */
-#define MPU6050_ADDR        0x68    /**< I2C address (AD0 = LOW)           */
-#define I2C_SCL_PIN         GPIO_PIN_10  /* PB10 — I2C2_SCL  */
-#define I2C_SDA_PIN         GPIO_PIN_11  /* PB11 — I2C2_SDA  */
+#define IR_DEBOUNCE_SAMPLES     5            /* Majority vote for noise rejection */
 
-/* ── Battery Monitoring ─────────────────────────────────── */
-#define BATTERY_ADC_PIN     GPIO_PIN_4   /* PA4  — ADC1_IN4  */
-#define BATTERY_LOW_MV      3200    /**< Low battery threshold (mV)        */
-#define BATTERY_R1          10000   /**< Divider upper resistor (Ω)        */
-#define BATTERY_R2          10000   /**< Divider lower resistor (Ω)        */
+/* ── MPU6050 IMU (I2C1) ─────────────────────────────────── */
+#define IMU_I2C_PORT            GPIOB
+#define IMU_SCL_PIN             GPIO_PIN_6   /* PB6 = I2C1_SCL */
+#define IMU_SDA_PIN             GPIO_PIN_7   /* PB7 = I2C1_SDA */
+#define MPU6050_ADDR            0x68         /* AD0 → GND */
 
-/* ── PID Tuning ─────────────────────────────────────────── */
-#define KP_SPEED            2.0f    /**< Speed PID proportional gain       */
-#define KI_SPEED            0.1f    /**< Speed PID integral gain           */
-#define KD_SPEED            0.5f    /**< Speed PID derivative gain         */
+/* MPU6050 registers */
+#define MPU6050_WHO_AM_I        0x75
+#define MPU6050_PWR_MGMT_1      0x6B
+#define MPU6050_GYRO_CONFIG     0x1B
+#define MPU6050_ACCEL_CONFIG    0x1C
+#define MPU6050_CONFIG          0x1A
+#define MPU6050_ACCEL_XOUT_H    0x3B
 
-#define KP_WALL             0.8f    /**< Wall-follow PID proportional gain */
-#define KI_WALL             0.0f    /**< Wall-follow PID integral gain     */
-#define KD_WALL             0.3f    /**< Wall-follow PID derivative gain   */
+/* Gyro configuration */
+#define GYRO_RANGE_500DPS       0x08         /* ±500°/s */
+#define GYRO_SENSITIVITY_500    65.5f        /* LSB/(°/s) at ±500°/s */
+#define IMU_CALIBRATION_SAMPLES 500          /* Samples for bias calibration */
+#define IMU_DLPF_CFG            0x03         /* ~44Hz bandwidth, 4.9ms delay */
 
-#define KP_TURN             3.0f    /**< Turn PID proportional gain        */
-#define KI_TURN             0.0f    /**< Turn PID integral gain            */
-#define KD_TURN             1.0f    /**< Turn PID derivative gain          */
+/* ── Battery Monitoring (ADC) ───────────────────────────── */
+#define BATTERY_ADC_PORT        GPIOA
+#define BATTERY_ADC_PIN         GPIO_PIN_4   /* PA4 = ADC1_CH4 */
+#define BATTERY_R1              10000        /* Upper resistor (ohms) */
+#define BATTERY_R2              10000        /* Lower resistor (ohms) */
+#define BATTERY_LOW_MV          3200         /* Low battery threshold */
 
-#define PID_OUTPUT_MIN     -1000
-#define PID_OUTPUT_MAX      1000
+/* ── UART Debug (USART1) ────────────────────────────────── */
+#define UART_TX_PORT            GPIOA
+#define UART_TX_PIN             GPIO_PIN_9   /* PA9 */
+#define UART_RX_PORT            GPIOA
+#define UART_RX_PIN             GPIO_PIN_10  /* PA10 */
+#define UART_BAUD               115200
 
-/* ── Motion Profile ─────────────────────────────────────── */
-#define MAX_SPEED           500     /**< Maximum speed (mm/s)              */
-#define SEARCH_SPEED        200     /**< Search run speed (mm/s)           */
-#define TURN_SPEED          150     /**< In-place turn speed (mm/s)        */
-#define ACCELERATION        1000    /**< Acceleration (mm/s²)              */
-#define DECELERATION        1000    /**< Deceleration (mm/s²)              */
+/* ── UI / Misc ──────────────────────────────────────────── */
+#define LED_PORT                GPIOC
+#define LED_PIN                 GPIO_PIN_13  /* PC13 (onboard) */
+#define BTN_START_PORT          GPIOB
+#define BTN_START_PIN           GPIO_PIN_8   /* PB8 */
+#define BTN_MODE_PORT           GPIOB
+#define BTN_MODE_PIN            GPIO_PIN_9   /* PB9 */
+
+/* ── PID Tuning Constants ───────────────────────────────── */
+/*
+ * GYRO-PRIMARY ARCHITECTURE:
+ *   - Speed PID: per-wheel speed control (encoder feedback)
+ *   - Heading PID: yaw-hold for straight-line driving (gyro feedback)
+ *   - Turn PID: heading-based turning (gyro feedback)
+ *
+ * NOTE: Wall-follow PID is REMOVED. Binary sensors cannot
+ *       provide proportional error for PID.
+ */
+
+/* Per-wheel speed PID */
+#define KP_SPEED                2.0f
+#define KI_SPEED                0.1f
+#define KD_SPEED                0.5f
+#define PID_SPEED_MIN          -1000
+#define PID_SPEED_MAX           1000
+
+/* Heading-hold PID (gyro yaw error → differential motor correction) */
+#define KP_HEADING              5.0f
+#define KI_HEADING              0.05f
+#define KD_HEADING              1.5f
+#define PID_HEADING_MIN        -500
+#define PID_HEADING_MAX         500
+
+/* Turn PID (gyro yaw error for 90° turns) */
+#define KP_TURN                 4.0f
+#define KI_TURN                 0.0f
+#define KD_TURN                 1.5f
+#define PID_TURN_MIN           -600
+#define PID_TURN_MAX            600
+
+/* ── Motion Profile Constants ───────────────────────────── */
+#define MAX_SPEED_MMPS          500          /* mm/s */
+#define SEARCH_SPEED_MMPS       200          /* mm/s (cautious search) */
+#define TURN_SPEED_MMPS         150          /* mm/s */
+#define ACCEL_MMPS2             1000         /* mm/s² */
+#define DECEL_MMPS2             1000         /* mm/s² */
+
+/* Turn parameters */
+#define TURN_ANGLE_90           90.0f        /* degrees */
+#define TURN_ANGLE_180          180.0f
+#define TURN_DEADBAND_DEG       2.0f         /* acceptable error for turn completion */
+#define TURN_TIMEOUT_MS         3000         /* max time for a turn */
 
 /* ── Control Loop ───────────────────────────────────────── */
-#define CONTROL_FREQ_HZ     1000    /**< Main control loop frequency       */
-#define CONTROL_DT          (1.0f / CONTROL_FREQ_HZ)
+#define CONTROL_FREQ_HZ         1000
+#define CONTROL_DT              0.001f       /* 1ms */
 
-/* ── Misc Pins ──────────────────────────────────────────── */
-#define LED_PIN             GPIO_PIN_0   /* PB0  — Status LED */
-#define LED_PORT            GPIOB
-#define BUTTON_PIN          GPIO_PIN_13  /* PC13 — User button */
-#define BUTTON_PORT         GPIOC
+/* ── Robot Pose ─────────────────────────────────────────── */
+typedef struct {
+    uint8_t   x;              /* Cell column (0-15) */
+    uint8_t   y;              /* Cell row (0-15) */
+    Direction facing;         /* Current heading */
+    float     yaw;            /* Current gyro yaw angle (degrees) */
+    float     target_yaw;     /* Target yaw for heading hold */
+} RobotPose;
 
 #ifdef __cplusplus
 }

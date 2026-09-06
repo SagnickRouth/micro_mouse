@@ -1,6 +1,9 @@
 /**
  * @file    encoder.h
- * @brief   Quadrature encoder interface for odometry.
+ * @brief   Quadrature encoder interface — TIM2 (left) / TIM3 (right).
+ *
+ * Pin mapping fix: Left uses PA0/PA1 (TIM2), Right uses PA6/PA7 (TIM3).
+ * Previous version had both on PA6/PA7 causing conflicts.
  */
 
 #ifndef ENCODER_H
@@ -12,50 +15,24 @@ extern "C" {
 
 #include <stdint.h>
 
-/**
- * @brief  Initialize encoder timers (TIM3, TIM4) in encoder mode.
- */
+/** Initialize TIM2 and TIM3 in hardware encoder mode. */
 void encoder_init(void);
 
-/**
- * @brief  Get left encoder count (signed, cumulative).
- * @return Encoder tick count.
- */
-int32_t encoder_get_left(void);
-
-/**
- * @brief  Get right encoder count (signed, cumulative).
- * @return Encoder tick count.
- */
-int32_t encoder_get_right(void);
-
-/**
- * @brief  Reset both encoder counters to zero.
- */
-void encoder_reset(void);
-
-/**
- * @brief  Get left encoder speed in ticks per control period.
- * @return Speed in ticks/period.
- */
-int16_t encoder_get_left_speed(void);
-
-/**
- * @brief  Get right encoder speed in ticks per control period.
- * @return Speed in ticks/period.
- */
-int16_t encoder_get_right_speed(void);
-
-/**
- * @brief  Update speed calculations. Call once per control loop.
- */
+/** Update encoder counts and speed (call at CONTROL_FREQ_HZ). */
 void encoder_update(void);
 
-/**
- * @brief  Convert encoder ticks to distance in mm.
- * @param  ticks  Encoder tick count.
- * @return Distance in mm.
- */
+/** Reset both encoder counters to zero. */
+void encoder_reset(void);
+
+/** Get cumulative tick counts. */
+int32_t encoder_get_left_count(void);
+int32_t encoder_get_right_count(void);
+
+/** Get current speed in mm/s. */
+float encoder_get_left_speed(void);
+float encoder_get_right_speed(void);
+
+/** Convert ticks to distance in mm. */
 float encoder_ticks_to_mm(int32_t ticks);
 
 #ifdef __cplusplus

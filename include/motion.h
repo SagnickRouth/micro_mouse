@@ -1,6 +1,12 @@
 /**
  * @file    motion.h
- * @brief   Motion profiling and navigation commands.
+ * @brief   Motion control — gyro-primary architecture.
+ *
+ * ARCHITECTURE:
+ *   - Straight-line: gyro yaw-hold PID + encoder distance
+ *   - Turns: gyro heading-based rotation
+ *   - NO wall-follow PID (binary sensors can't provide gradient)
+ *   - Front-wall squaring for yaw drift reset
  */
 
 #ifndef MOTION_H
@@ -10,63 +16,51 @@
 extern "C" {
 #endif
 
-#include <stdint.h>
 #include <stdbool.h>
-#include "maze.h"
+#include "config.h"
 
-/** @brief Motion state. */
-typedef enum {
-    MOTION_IDLE,
-    MOTION_ACCELERATING,
-    MOTION_CRUISING,
-    MOTION_DECELERATING,
-    MOTION_COMPLETE
-} MotionState;
-
-/**
- * @brief  Initialize motion controller.
- */
+/** Initialize motion controller (PID instances, state). */
 void motion_init(void);
 
-/**
- * @brief  Move forward one cell (180 mm center-to-center).
- */
+/** Drive forward one cell (CELL_SIZE_MM) at search speed. */
 void motion_move_cell(void);
 
-/**
- * @brief  Move forward a specified distance.
- * @param  distance_mm  Distance in mm.
- * @param  end_speed    Desired speed at end (mm/s), 0 to stop.
- */
+/** Drive forward a specified distance (mm) at given speed. Blocking. */
 void motion_move(float distance_mm, float end_speed);
 
-/**
- * @brief  Execute an in-place turn.
- * @param  angle_deg  Turn angle: +90 = left, -90 = right, 180 = U-turn.
- */
+/** Turn in-place by the given angle (degrees). Positive = right. Blocking. */
 void motion_turn(float angle_deg);
 
-/**
- * @brief  Execute movement toward the best next cell.
- * @param  current  Current pose (updated after move).
- */
-void motion_execute_direction(Pose *current, Direction target_dir);
+/** Turn left 90°. */
+void motion_turn_left(void);
+
+/** Turn right 90°. */
+void motion_turn_right(void);
+
+/** Turn 180° (about-face). */
+void motion_turn_180(void);
 
 /**
- * @brief  Stop all motion and brake.
+ * Execute a direction change relative to current heading.
+ * Computes required turn, executes it, then moves one cell.
+ * Updates robot pose.
  */
-void motion_stop(void);
+void motion_execute_direction(Direction target_dir);
 
 /**
- * @brief  Update motion controller. Call every control period.
+ * Square up against a front wall to re-zero gyro yaw.
+ * Call when front wall is detected to correct drift.
  */
+void motion_square_up(void);
+
+/** Update motion controller (called from control loop ISR or main loop). */
 void motion_update(void);
 
-/**
- * @brief  Check if current motion command is complete.
- * @return true if motion finished.
- */
+/** Check if current motion command is complete. */
 bool motion_is_complete(void);
+
+/** Emergency stop — brake both motors immediately. */
+void motion_stop(void);
 
 #ifdef __cplusplus
 }

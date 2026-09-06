@@ -1,150 +1,119 @@
 /**
  * @file    imu.c
- * @brief   MPU6050 IMU driver over I2C2.
- * @author  Debosmita Paul
- * @date    2026-09-04
+ * @brief   MPU6050 IMU driver over I2C — yaw integration with bias calibration.
+ * @author  Sagnick Routh
+ * @date    2026-09-06
  *
- * Provides gyroscope yaw integration for turn accuracy.
- * Connected via I2C2: SCL=PB10, SDA=PB11.
+ * PRIMARY NAVIGATION SENSOR in the gyro-primary architecture.
+ * Provides continuous yaw angle for heading-hold PID and turn control.
+ *
+ * Key features:
+ *   - Startup bias calibration (mandatory, robot stationary)
+ *   - Digital low-pass filter (DLPF) enabled to reduce vibration noise
+ *   - yaw_set() for front-wall squaring drift reset
  */
 
 #include "imu.h"
 #include "config.h"
 
-/* ── MPU6050 Register Addresses ─────────────────────────── */
-#define MPU6050_REG_PWR_MGMT_1    0x6B
-#define MPU6050_REG_GYRO_CONFIG   0x1B
-#define MPU6050_REG_ACCEL_CONFIG  0x1C
-#define MPU6050_REG_WHO_AM_I      0x75
-#define MPU6050_REG_ACCEL_XOUT_H  0x3B
-#define MPU6050_REG_GYRO_XOUT_H   0x43
+/* ── Global IMU Data ────────────────────────────────────── */
+ImuData imu_data;
 
-/* ── Gyro Sensitivity ───────────────────────────────────── */
-/* At ±250°/s range: 131 LSB per °/s */
-#define GYRO_SENSITIVITY  131.0f
+/* ── I2C Stubs (replace with real HAL) ──────────────────── */
 
-/* ── Internal State ─────────────────────────────────────── */
-static float yaw_angle    = 0.0f;
-static float gyro_z_bias  = 0.0f;
-static bool  initialized  = false;
-
-/* ── I2C Stubs ──────────────────────────────────────────── */
-static bool    i2c_write_reg(uint8_t addr, uint8_t reg, uint8_t data);
-static bool    i2c_read_reg(uint8_t addr, uint8_t reg, uint8_t *buf, uint8_t len);
-
-/* ── Initialization ─────────────────────────────────────── */
-bool imu_init(void)
-{
-    /*
-     * TODO: Initialize I2C2 peripheral.
-     * SCL = PB10, SDA = PB11
-     * Speed: 400 kHz (Fast mode)
+static bool i2c_write_reg(uint8_t dev_addr, uint8_t reg, uint8_t value) {
+    /* TODO: Implement real I2C write
+     * HAL_I2C_Mem_Write(&hi2c1, dev_addr << 1, reg,
+     *                   I2C_MEMADD_SIZE_8BIT, &value, 1, 100);
      */
-
-    /* Check WHO_AM_I register */
-    uint8_t who = 0;
-    if (!i2c_read_reg(MPU6050_ADDR, MPU6050_REG_WHO_AM_I, &who, 1)) {
-        return false;
-    }
-    if (who != 0x68) {
-        return false;
-    }
-
-    /* Wake up MPU6050 (clear sleep bit) */
-    i2c_write_reg(MPU6050_ADDR, MPU6050_REG_PWR_MGMT_1, 0x00);
-
-    /* Set gyro range to ±250°/s */
-    i2c_write_reg(MPU6050_ADDR, MPU6050_REG_GYRO_CONFIG, 0x00);
-
-    /* Set accelerometer range to ±2g */
-    i2c_write_reg(MPU6050_ADDR, MPU6050_REG_ACCEL_CONFIG, 0x00);
-
-    initialized = true;
+    (void)dev_addr; (void)reg; (void)value;
     return true;
 }
 
-/* ── Read IMU Data ──────────────────────────────────────── */
-void imu_read(ImuData *data)
-{
-    if (!initialized || data == (void *)0) return;
+static bool i2c_read_reg(uint8_t dev_addr, uint8_t reg, uint8_t *buf, uint16_t len) {
+    /* TODO: Implement real I2C read
+     * HAL_I2C_Mem_Read(&hi2c1, dev_addr << 1, reg,
+     *                  I2C_MEMADD_SIZE_8BIT, buf, len, 100);
+     */
+    (void)dev_addr; (void)reg; (void)buf; (void)len;
+    return true;
+}
 
-    uint8_t buf[14];
+static void delay_ms(uint32_t ms) {
+    /* TODO: Replace with HAL_Delay(ms) or SysTick-based delay */
+    for (volatile uint32_t i = 0; i < ms * 7200; i++) { __asm("nop"); }
+}
 
-    /* Read 14 bytes starting from ACCEL_XOUT_H */
-    if (!i2c_read_reg(MPU6050_ADDR, MPU6050_REG_ACCEL_XOUT_H, buf, 14)) {
-        return;
+/* ── Initialization ─────────────────────────────────────── */
+bool imu_init(void) {
+    /* Check WHO_AM_I */
+    uint8_t who = 0;
+    i2c_read_reg(MPU6050_ADDR, MPU6050_WHO_AM_I, &who, 1);
+    if (who != 0x68 && who != 0x72) {
+        return false;  /* MPU6050 not found */
     }
 
-    /* Parse accelerometer (big-endian) */
-    data->accel_x = (int16_t)((buf[0]  << 8) | buf[1]);
-    data->accel_y = (int16_t)((buf[2]  << 8) | buf[3]);
-    data->accel_z = (int16_t)((buf[4]  << 8) | buf[5]);
-    /* buf[6], buf[7] = temperature (skipped) */
+    /* Wake up (clear SLEEP bit) */
+    i2c_write_reg(MPU6050_ADDR, MPU6050_PWR_MGMT_1, 0x00);
+    delay_ms(100);
 
-    /* Parse gyroscope */
-    data->gyro_x  = (int16_t)((buf[8]  << 8) | buf[9]);
-    data->gyro_y  = (int16_t)((buf[10] << 8) | buf[11]);
-    data->gyro_z  = (int16_t)((buf[12] << 8) | buf[13]);
+    /* Set gyro range: ±500°/s */
+    i2c_write_reg(MPU6050_ADDR, MPU6050_GYRO_CONFIG, GYRO_RANGE_500DPS);
 
-    /* Convert gyro Z to deg/s and remove bias */
-    data->yaw_rate = ((float)data->gyro_z / GYRO_SENSITIVITY) - gyro_z_bias;
+    /* Set accel range: ±2g */
+    i2c_write_reg(MPU6050_ADDR, MPU6050_ACCEL_CONFIG, 0x00);
 
-    /* Integrate yaw */
-    yaw_angle += data->yaw_rate * CONTROL_DT;
-    data->yaw = yaw_angle;
+    /* Enable DLPF: ~44Hz bandwidth, reduces motor vibration noise */
+    i2c_write_reg(MPU6050_ADDR, MPU6050_CONFIG, IMU_DLPF_CFG);
+
+    /* Initialize data */
+    imu_data.yaw_angle  = 0.0f;
+    imu_data.yaw_rate   = 0.0f;
+    imu_data.gyro_z_bias = 0.0f;
+
+    return true;
 }
 
-/* ── Reset Yaw ──────────────────────────────────────────── */
-void imu_reset_yaw(void)
-{
-    yaw_angle = 0.0f;
-}
+/* ── Read All Axes + Integrate Yaw ──────────────────────── */
+void imu_read(void) {
+    uint8_t buf[14];
+    i2c_read_reg(MPU6050_ADDR, MPU6050_ACCEL_XOUT_H, buf, 14);
 
-/* ── Get Yaw ────────────────────────────────────────────── */
-float imu_get_yaw(void)
-{
-    return yaw_angle;
+    /* Parse 14-byte block: accel(6) + temp(2) + gyro(6) */
+    imu_data.accel_x = (int16_t)((buf[0]  << 8) | buf[1]);
+    imu_data.accel_y = (int16_t)((buf[2]  << 8) | buf[3]);
+    imu_data.accel_z = (int16_t)((buf[4]  << 8) | buf[5]);
+    imu_data.temperature = (int16_t)((buf[6] << 8) | buf[7]);
+    imu_data.gyro_x  = (int16_t)((buf[8]  << 8) | buf[9]);
+    imu_data.gyro_y  = (int16_t)((buf[10] << 8) | buf[11]);
+    imu_data.gyro_z  = (int16_t)((buf[12] << 8) | buf[13]);
+
+    /* Compute yaw rate (°/s) with bias correction */
+    imu_data.yaw_rate = ((float)imu_data.gyro_z - imu_data.gyro_z_bias)
+                        / GYRO_SENSITIVITY_500;
+
+    /* Integrate yaw angle */
+    imu_data.yaw_angle += imu_data.yaw_rate * CONTROL_DT;
 }
 
 /* ── Calibrate Gyro Bias ────────────────────────────────── */
-void imu_calibrate(void)
-{
-    if (!initialized) return;
-
+void imu_calibrate(void) {
     float sum = 0.0f;
-    const int samples = 500;
 
-    for (int i = 0; i < samples; i++) {
+    for (int i = 0; i < IMU_CALIBRATION_SAMPLES; i++) {
         uint8_t buf[2];
-        if (i2c_read_reg(MPU6050_ADDR, MPU6050_REG_GYRO_XOUT_H + 4, buf, 2)) {
-            int16_t gz = (int16_t)((buf[0] << 8) | buf[1]);
-            sum += (float)gz / GYRO_SENSITIVITY;
-        }
-        /* Small delay between samples */
-        volatile uint32_t d;
-        for (d = 0; d < 7200; d++) { __asm__("nop"); }
+        i2c_read_reg(MPU6050_ADDR, 0x47, buf, 2);  /* GYRO_ZOUT_H/L */
+        int16_t raw_z = (int16_t)((buf[0] << 8) | buf[1]);
+        sum += (float)raw_z;
+        delay_ms(1);
     }
 
-    gyro_z_bias = sum / (float)samples;
+    imu_data.gyro_z_bias = sum / (float)IMU_CALIBRATION_SAMPLES;
+    imu_data.yaw_angle = 0.0f;
 }
 
-/* ── I2C Stubs (replace with HAL) ───────────────────────── */
-static bool i2c_write_reg(uint8_t addr, uint8_t reg, uint8_t data)
-{
-    (void)addr; (void)reg; (void)data;
-    /*
-     * TODO: HAL_I2C_Mem_Write(&hi2c2, addr << 1, reg,
-     *       I2C_MEMADD_SIZE_8BIT, &data, 1, 100);
-     */
-    return true;
-}
-
-static bool i2c_read_reg(uint8_t addr, uint8_t reg, uint8_t *buf, uint8_t len)
-{
-    (void)addr; (void)reg; (void)buf; (void)len;
-    /*
-     * TODO: HAL_I2C_Mem_Read(&hi2c2, addr << 1, reg,
-     *       I2C_MEMADD_SIZE_8BIT, buf, len, 100);
-     */
-    return true;
-}
+/* ── Getters / Setters ──────────────────────────────────── */
+float imu_get_yaw(void)           { return imu_data.yaw_angle;   }
+void  imu_reset_yaw(void)         { imu_data.yaw_angle = 0.0f;   }
+void  imu_set_yaw(float yaw_deg)  { imu_data.yaw_angle = yaw_deg; }
+const ImuData* imu_get_data(void)  { return &imu_data;             }

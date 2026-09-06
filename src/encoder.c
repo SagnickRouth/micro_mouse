@@ -1,117 +1,93 @@
 /**
  * @file    encoder.c
- * @brief   Quadrature encoder driver using hardware timer encoder mode.
- * @author  Debosmita Paul
- * @date    2026-09-04
+ * @brief   Quadrature encoder driver — hardware timer encoder mode.
+ * @author  Sagnick Routh
+ * @date    2026-09-06
  *
- * Left motor:  TIM3 CH1/CH2 (PA6/PA7)
- * Right motor: TIM4 CH1/CH2 (PB6/PB7)
+ * LEFT:  TIM2 CH1/CH2 → PA0/PA1
+ * RIGHT: TIM3 CH1/CH2 → PA6/PA7
+ *
+ * Fix: Previous version mapped both encoders to PA6/PA7.
  */
 
 #include "encoder.h"
 #include "config.h"
-#include <math.h>
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
+/* ── Encoder State ──────────────────────────────────────── */
+static int32_t count_left;
+static int32_t count_right;
+static int32_t last_raw_left;
+static int32_t last_raw_right;
+static float   speed_left;   /* mm/s */
+static float   speed_right;  /* mm/s */
 
-/* ── Internal State ─────────────────────────────────────── */
-static int32_t left_count  = 0;
-static int32_t right_count = 0;
-static int32_t left_prev   = 0;
-static int32_t right_prev  = 0;
-static int16_t left_speed  = 0;
-static int16_t right_speed = 0;
+/* ── Timer Stubs (replace with real HAL) ────────────────── */
+
+static uint16_t timer_read_left(void) {
+    /* TODO: return __HAL_TIM_GET_COUNTER(&htim2); */
+    return 0;
+}
+
+static uint16_t timer_read_right(void) {
+    /* TODO: return __HAL_TIM_GET_COUNTER(&htim3); */
+    return 0;
+}
 
 /* ── Initialization ─────────────────────────────────────── */
-void encoder_init(void)
-{
-    /*
-     * TODO: Configure TIM3 in Encoder Mode:
-     *   - CH1 (PA6) and CH2 (PA7) as encoder inputs
-     *   - Count on both edges for 4x resolution
-     *   - Auto-reload: 0xFFFF
+void encoder_init(void) {
+    /* TODO: Configure TIM2 in encoder mode on PA0/PA1
+     *       Configure TIM3 in encoder mode on PA6/PA7
      *
-     * TODO: Configure TIM4 in Encoder Mode:
-     *   - CH1 (PB6) and CH2 (PB7) as encoder inputs
-     *   - Count on both edges for 4x resolution
-     *   - Auto-reload: 0xFFFF
-     *
-     * TODO: Start both timers:
-     *   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
-     *   HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL);
+     * Example (HAL):
+     *   htim2.Instance = TIM2;
+     *   htim2.Init.Period = 0xFFFF;
+     *   HAL_TIM_Encoder_Init(&htim2, &sConfig);
+     *   HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
+     *   (same for htim3/TIM3)
      */
-
     encoder_reset();
 }
 
-/* ── Get Counts ─────────────────────────────────────────── */
-int32_t encoder_get_left(void)
-{
-    return left_count;
+/* ── Update ─────────────────────────────────────────────── */
+void encoder_update(void) {
+    int32_t raw_left  = (int32_t)timer_read_left();
+    int32_t raw_right = (int32_t)timer_read_right();
+
+    /* Compute delta (handle 16-bit overflow) */
+    int16_t delta_l = (int16_t)(raw_left  - last_raw_left);
+    int16_t delta_r = (int16_t)(raw_right - last_raw_right);
+
+    count_left  += delta_l;
+    count_right += delta_r;
+
+    /* Speed in mm/s */
+    speed_left  = encoder_ticks_to_mm(delta_l) / CONTROL_DT;
+    speed_right = encoder_ticks_to_mm(delta_r) / CONTROL_DT;
+
+    last_raw_left  = raw_left;
+    last_raw_right = raw_right;
 }
 
-int32_t encoder_get_right(void)
-{
-    return right_count;
-}
-
-/* ── Reset Counters ─────────────────────────────────────── */
-void encoder_reset(void)
-{
-    left_count  = 0;
-    right_count = 0;
-    left_prev   = 0;
-    right_prev  = 0;
-    left_speed  = 0;
-    right_speed = 0;
-
-    /* TODO: Reset timer counters:
-     * __HAL_TIM_SET_COUNTER(&htim3, 0);
-     * __HAL_TIM_SET_COUNTER(&htim4, 0);
+/* ── Reset ──────────────────────────────────────────────── */
+void encoder_reset(void) {
+    count_left  = 0;
+    count_right = 0;
+    last_raw_left  = 0;
+    last_raw_right = 0;
+    speed_left  = 0.0f;
+    speed_right = 0.0f;
+    /* TODO: __HAL_TIM_SET_COUNTER(&htim2, 0);
+     *       __HAL_TIM_SET_COUNTER(&htim3, 0);
      */
 }
 
-/* ── Speed Readings ─────────────────────────────────────── */
-int16_t encoder_get_left_speed(void)
-{
-    return left_speed;
-}
+/* ── Getters ────────────────────────────────────────────── */
+int32_t encoder_get_left_count(void)   { return count_left;  }
+int32_t encoder_get_right_count(void)  { return count_right; }
+float   encoder_get_left_speed(void)   { return speed_left;  }
+float   encoder_get_right_speed(void)  { return speed_right; }
 
-int16_t encoder_get_right_speed(void)
-{
-    return right_speed;
-}
-
-/* ── Update (call every control period) ─────────────────── */
-void encoder_update(void)
-{
-    /*
-     * TODO: Read timer counters:
-     * int32_t raw_left  = (int16_t)__HAL_TIM_GET_COUNTER(&htim3);
-     * int32_t raw_right = (int16_t)__HAL_TIM_GET_COUNTER(&htim4);
-     *
-     * Handle overflow/underflow of 16-bit counters.
-     */
-
-    int32_t raw_left  = 0; /* placeholder */
-    int32_t raw_right = 0; /* placeholder */
-
-    /* Calculate delta since last update */
-    left_speed  = (int16_t)(raw_left  - left_prev);
-    right_speed = (int16_t)(raw_right - right_prev);
-
-    left_count  += left_speed;
-    right_count += right_speed;
-
-    left_prev  = raw_left;
-    right_prev = raw_right;
-}
-
-/* ── Convert Ticks to Distance ──────────────────────────── */
-float encoder_ticks_to_mm(int32_t ticks)
-{
-    float circumference = (float)WHEEL_DIAMETER_MM * (float)M_PI;
-    return ((float)ticks / (float)TICKS_PER_REV) * circumference;
+/* ── Tick to MM Conversion ──────────────────────────────── */
+float encoder_ticks_to_mm(int32_t ticks) {
+    return (float)ticks * MM_PER_TICK;
 }

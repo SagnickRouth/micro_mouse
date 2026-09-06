@@ -1,257 +1,227 @@
 /**
  * @file    motion.c
- * @brief   Motion profiling and navigation.
- * @author  Debosmita Paul
- * @date    2026-09-04
+ * @brief   Motion profiling and navigation — gyro-primary architecture.
+ * @author  Sagnick Routh
+ * @date    2026-09-06
  *
- * Implements trapezoidal velocity profiles and cell-to-cell movement.
+ * GYRO-PRIMARY CONTROL:
+ *   Straight-line driving uses MPU6050 yaw as the primary error source
+ *   for heading hold. Binary IR sensors cannot provide proportional
+ *   wall-distance feedback, so the gyro replaces wall-follow PID.
+ *
+ *   Turns use gyro yaw target: rotate until yaw matches target ± deadband.
+ *
+ *   Front-wall squaring re-zeros the gyro to correct accumulated drift.
  */
 
 #include "motion.h"
 #include "motor.h"
 #include "encoder.h"
-#include "sensor.h"
 #include "imu.h"
+#include "sensor.h"
 #include "pid.h"
 #include "config.h"
-#include <math.h>
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
+/* ── PID Instances ──────────────────────────────────────── */
+static PID pid_speed_l;       /* Left wheel speed PID */
+static PID pid_speed_r;       /* Right wheel speed PID */
+static PID pid_heading;       /* Heading-hold PID (gyro yaw) */
+static PID pid_turn;          /* Turn PID (gyro yaw for in-place turns) */
 
 /* ── Motion State ───────────────────────────────────────── */
-static MotionState current_state = MOTION_IDLE;
-static float target_distance  = 0.0f;
-static float current_speed    = 0.0f;
-static float target_speed     = 0.0f;
-static float end_speed_target = 0.0f;
-static float distance_covered = 0.0f;
+static bool     motion_complete;
+static float    current_speed;
+static float    target_distance;
 
-/* ── PID Controllers (local to motion) ──────────────────── */
-static PidController pid_speed_l;
-static PidController pid_speed_r;
-static PidController pid_wall_follow;
+/* ── Global Robot Pose ──────────────────────────────────── */
+extern RobotPose robot_pose;
 
 /* ── Initialization ─────────────────────────────────────── */
-void motion_init(void)
-{
+void motion_init(void) {
     pid_init(&pid_speed_l, KP_SPEED, KI_SPEED, KD_SPEED,
-             PID_OUTPUT_MIN, PID_OUTPUT_MAX);
+             PID_SPEED_MIN, PID_SPEED_MAX);
     pid_init(&pid_speed_r, KP_SPEED, KI_SPEED, KD_SPEED,
-             PID_OUTPUT_MIN, PID_OUTPUT_MAX);
-    pid_init(&pid_wall_follow, KP_WALL, KI_WALL, KD_WALL,
-             -200, 200);
+             PID_SPEED_MIN, PID_SPEED_MAX);
+    pid_init(&pid_heading, KP_HEADING, KI_HEADING, KD_HEADING,
+             PID_HEADING_MIN, PID_HEADING_MAX);
+    pid_init(&pid_turn, KP_TURN, KI_TURN, KD_TURN,
+             PID_TURN_MIN, PID_TURN_MAX);
 
-    current_state = MOTION_IDLE;
+    motion_complete = true;
+    current_speed   = 0.0f;
+    target_distance = 0.0f;
 }
 
-/* ── Move One Cell ──────────────────────────────────────── */
-void motion_move_cell(void)
-{
-    motion_move((float)CELL_SIZE_MM, 0.0f);
-}
-
-/* ── Move Distance ──────────────────────────────────────── */
-void motion_move(float distance_mm, float end_speed)
-{
-    target_distance  = distance_mm;
-    end_speed_target = end_speed;
-    target_speed     = (float)SEARCH_SPEED;
-    distance_covered = 0.0f;
-    current_speed    = 0.0f;
-    current_state    = MOTION_ACCELERATING;
-
+/* ── Straight-Line Move (Gyro + Encoder) ────────────────── */
+void motion_move(float distance_mm, float end_speed) {
     encoder_reset();
+    pid_reset(&pid_heading);
     pid_reset(&pid_speed_l);
     pid_reset(&pid_speed_r);
-    pid_reset(&pid_wall_follow);
+    motion_complete = false;
+    target_distance = distance_mm;
+    current_speed   = 0.0f;
 
-    /* Run motion loop until complete */
-    while (current_state != MOTION_COMPLETE &&
-           current_state != MOTION_IDLE) {
-        motion_update();
-        /* Small delay for control period */
-        volatile uint32_t d;
-        for (d = 0; d < 72; d++) { __asm__("nop"); }
-    }
-}
+    /* Set heading target to current yaw (hold this heading) */
+    float heading_target = imu_get_yaw();
 
-/* ── Turn ───────────────────────────────────────────────── */
-void motion_turn(float angle_deg)
-{
-    /* Calculate arc length each wheel must travel */
-    float arc = (float)M_PI * (float)WHEEL_TRACK_MM * fabsf(angle_deg) / 360.0f;
-
-    encoder_reset();
-    imu_reset_yaw();
-
-    PidController pid_turn;
-    pid_init(&pid_turn, KP_TURN, KI_TURN, KD_TURN, -500, 500);
-
-    float target_yaw = angle_deg;
-    float current_yaw = 0.0f;
-
-    /* Turn loop */
-    int timeout = 5000;  /* safety timeout */
-    while (timeout > 0) {
-        current_yaw = imu_get_yaw();
-        float error = target_yaw - current_yaw;
-
-        if (fabsf(error) < 2.0f) {
-            break;  /* Close enough */
-        }
-
-        float correction = pid_compute(&pid_turn, target_yaw,
-                                        current_yaw, CONTROL_DT);
-        int16_t pwm = (int16_t)fabsf(correction);
-        if (pwm > 400) pwm = 400;
-
-        if (correction > 0) {
-            /* Turn left: left backward, right forward */
-            motor_set(MOTOR_LEFT,  MOTOR_BACKWARD, (uint16_t)pwm);
-            motor_set(MOTOR_RIGHT, MOTOR_FORWARD,  (uint16_t)pwm);
-        } else {
-            /* Turn right: left forward, right backward */
-            motor_set(MOTOR_LEFT,  MOTOR_FORWARD,  (uint16_t)pwm);
-            motor_set(MOTOR_RIGHT, MOTOR_BACKWARD, (uint16_t)pwm);
-        }
-
+    while (!motion_complete) {
+        /* Read sensors */
         encoder_update();
-        ImuData imu;
-        imu_read(&imu);
+        imu_read();
 
-        timeout--;
-        volatile uint32_t d;
-        for (d = 0; d < 72; d++) { __asm__("nop"); }
+        /* Distance covered (average of both wheels) */
+        float dist_l = encoder_ticks_to_mm(encoder_get_left_count());
+        float dist_r = encoder_ticks_to_mm(encoder_get_right_count());
+        float distance_covered = (dist_l + dist_r) / 2.0f;
+
+        /* Trapezoidal velocity profile */
+        float remaining = target_distance - distance_covered;
+        float decel_dist = (current_speed * current_speed - end_speed * end_speed)
+                           / (2.0f * DECEL_MMPS2);
+
+        if (remaining <= 0.0f) {
+            motion_complete = true;
+            motor_brake();
+            break;
+        }
+
+        if (remaining <= decel_dist) {
+            /* Decelerate */
+            current_speed -= DECEL_MMPS2 * CONTROL_DT;
+            if (current_speed < end_speed) current_speed = end_speed;
+        } else if (current_speed < SEARCH_SPEED_MMPS) {
+            /* Accelerate */
+            current_speed += ACCEL_MMPS2 * CONTROL_DT;
+            if (current_speed > SEARCH_SPEED_MMPS) current_speed = SEARCH_SPEED_MMPS;
+        }
+
+        /* Heading-hold PID: error = current_yaw - target_yaw */
+        float yaw_error = imu_get_yaw() - heading_target;
+        float heading_correction = pid_compute(&pid_heading, yaw_error);
+
+        /* Apply differential correction */
+        float left_target  = current_speed - heading_correction;
+        float right_target = current_speed + heading_correction;
+
+        /* Per-wheel speed PID */
+        float left_speed  = encoder_get_left_speed();
+        float right_speed = encoder_get_right_speed();
+
+        float left_pwm  = pid_compute(&pid_speed_l, left_target - left_speed);
+        float right_pwm = pid_compute(&pid_speed_r, right_target - right_speed);
+
+        motor_set_left((int16_t)left_pwm);
+        motor_set_right((int16_t)right_pwm);
+
+        /* Delay ~1ms (control period) */
+        /* TODO: Replace with proper timer-based control tick */
+        for (volatile int d = 0; d < 7200; d++) { __asm("nop"); }
     }
-
-    motor_brake();
-    current_state = MOTION_COMPLETE;
 }
 
-/* ── Execute Direction Change + Move ────────────────────── */
-void motion_execute_direction(Pose *current, Direction target_dir)
-{
-    /* Calculate turn angle */
-    int turn = (int)target_dir - (int)current->dir;
+void motion_move_cell(void) {
+    motion_move(CELL_SIZE_MM, 0.0f);
+}
 
-    /* Normalize to [-2, 2] */
-    if (turn > 2)  turn -= 4;
-    if (turn < -2) turn += 4;
+/* ── Gyro-Based Turn ────────────────────────────────────── */
+void motion_turn(float angle_deg) {
+    pid_reset(&pid_turn);
+    imu_read();
 
-    float angle = (float)turn * 90.0f;
+    float start_yaw = imu_get_yaw();
+    float target_yaw = start_yaw + angle_deg;
+    uint32_t timeout = 0;
 
-    /* Turn if needed */
-    if (turn != 0) {
-        motion_turn(angle);
+    while (timeout < (TURN_TIMEOUT_MS / 1)) {
+        imu_read();
+
+        float yaw_error = target_yaw - imu_get_yaw();
+
+        /* Check completion */
+        if (yaw_error > -TURN_DEADBAND_DEG && yaw_error < TURN_DEADBAND_DEG) {
+            motor_brake();
+            /* Update robot heading target */
+            robot_pose.target_yaw = target_yaw;
+            return;
+        }
+
+        float turn_output = pid_compute(&pid_turn, yaw_error);
+
+        /* Spin in place: left and right motors in opposite directions */
+        motor_set_left((int16_t)(-turn_output));
+        motor_set_right((int16_t)(turn_output));
+
+        timeout++;
+        /* TODO: Replace with proper 1ms delay */
+        for (volatile int d = 0; d < 7200; d++) { __asm("nop"); }
+    }
+
+    /* Timeout — emergency stop */
+    motor_brake();
+}
+
+void motion_turn_left(void)  { motion_turn(-TURN_ANGLE_90); }
+void motion_turn_right(void) { motion_turn(TURN_ANGLE_90);  }
+void motion_turn_180(void)   { motion_turn(TURN_ANGLE_180); }
+
+/* ── Direction Execution ────────────────────────────────── */
+void motion_execute_direction(Direction target_dir) {
+    int diff = (int)target_dir - (int)robot_pose.facing;
+
+    /* Normalize to -2..+2 */
+    if (diff > 2)  diff -= 4;
+    if (diff < -2) diff += 4;
+
+    /* Turn as needed */
+    switch (diff) {
+        case  0: break;                           /* Already facing right way */
+        case  1: motion_turn_right(); break;      /* Turn right 90° */
+        case -1: motion_turn_left();  break;      /* Turn left 90° */
+        case  2: case -2: motion_turn_180(); break; /* About-face */
     }
 
     /* Move one cell forward */
     motion_move_cell();
 
     /* Update pose */
-    current->dir = target_dir;
-
-    static const int8_t dx[] = { 0, 1, 0, -1 };
-    static const int8_t dy[] = { 1, 0, -1, 0 };
-
-    current->x = (uint8_t)((int8_t)current->x + dx[target_dir]);
-    current->y = (uint8_t)((int8_t)current->y + dy[target_dir]);
-}
-
-/* ── Stop ───────────────────────────────────────────────── */
-void motion_stop(void)
-{
-    motor_brake();
-    current_state = MOTION_IDLE;
-    current_speed = 0.0f;
-}
-
-/* ── Update (call every control period) ─────────────────── */
-void motion_update(void)
-{
-    encoder_update();
-
-    /* Get distance from encoders */
-    float left_mm  = encoder_ticks_to_mm(encoder_get_left());
-    float right_mm = encoder_ticks_to_mm(encoder_get_right());
-    distance_covered = (left_mm + right_mm) / 2.0f;
-
-    float remaining = target_distance - distance_covered;
-
-    /* Trapezoidal profile */
-    float decel_dist = (current_speed * current_speed -
-                        end_speed_target * end_speed_target) /
-                       (2.0f * (float)DECELERATION);
-
-    switch (current_state) {
-        case MOTION_ACCELERATING:
-            current_speed += (float)ACCELERATION * CONTROL_DT;
-            if (current_speed >= target_speed) {
-                current_speed = target_speed;
-                current_state = MOTION_CRUISING;
-            }
-            if (remaining <= decel_dist) {
-                current_state = MOTION_DECELERATING;
-            }
-            break;
-
-        case MOTION_CRUISING:
-            if (remaining <= decel_dist) {
-                current_state = MOTION_DECELERATING;
-            }
-            break;
-
-        case MOTION_DECELERATING:
-            current_speed -= (float)DECELERATION * CONTROL_DT;
-            if (current_speed <= end_speed_target || remaining <= 0.0f) {
-                current_speed = end_speed_target;
-                current_state = MOTION_COMPLETE;
-                if (end_speed_target == 0.0f) {
-                    motor_brake();
-                }
-                return;
-            }
-            break;
-
-        case MOTION_COMPLETE:
-        case MOTION_IDLE:
-            return;
+    robot_pose.facing = target_dir;
+    switch (target_dir) {
+        case DIR_NORTH: robot_pose.y++; break;
+        case DIR_SOUTH: robot_pose.y--; break;
+        case DIR_EAST:  robot_pose.x++; break;
+        case DIR_WEST:  robot_pose.x--; break;
     }
-
-    /* Get wall-following correction */
-    SensorData sd;
-    sensor_read_all(&sd);
-    int16_t wall_err = sensor_get_wall_error(&sd);
-    float correction = pid_compute(&pid_wall_follow, 0.0f,
-                                    (float)wall_err, CONTROL_DT);
-
-    /* Apply speed + correction to motors */
-    float left_target  = current_speed - correction;
-    float right_target = current_speed + correction;
-
-    /* Speed PID */
-    float left_actual  = encoder_ticks_to_mm(encoder_get_left_speed()) /
-                         CONTROL_DT;
-    float right_actual = encoder_ticks_to_mm(encoder_get_right_speed()) /
-                         CONTROL_DT;
-
-    float left_pwm  = pid_compute(&pid_speed_l, left_target,
-                                   left_actual, CONTROL_DT);
-    float right_pwm = pid_compute(&pid_speed_r, right_target,
-                                   right_actual, CONTROL_DT);
-
-    /* Apply to motors */
-    MotorDirection l_dir = (left_pwm >= 0) ? MOTOR_FORWARD : MOTOR_BACKWARD;
-    MotorDirection r_dir = (right_pwm >= 0) ? MOTOR_FORWARD : MOTOR_BACKWARD;
-
-    motor_set(MOTOR_LEFT,  l_dir, (uint16_t)fabsf(left_pwm));
-    motor_set(MOTOR_RIGHT, r_dir, (uint16_t)fabsf(right_pwm));
 }
 
-/* ── Check Complete ─────────────────────────────────────── */
-bool motion_is_complete(void)
-{
-    return (current_state == MOTION_COMPLETE);
+/* ── Front-Wall Squaring (Drift Reset) ──────────────────── */
+void motion_square_up(void) {
+    /*
+     * When both front-left and front-right sensors detect a wall,
+     * the robot is facing a wall squarely. Use this to re-zero
+     * the gyro yaw to a known cardinal direction, correcting drift.
+     *
+     * With digital sensors we can't measure distance symmetry,
+     * so we simply re-zero the yaw to the nearest 90° multiple.
+     */
+    if (sensor_front_wall()) {
+        float yaw = imu_get_yaw();
+        /* Snap to nearest 90° */
+        float snapped = ((int)((yaw + 45.0f) / 90.0f)) * 90.0f;
+        imu_set_yaw(snapped);
+        robot_pose.target_yaw = snapped;
+    }
+}
+
+/* ── Update (for ISR-based control) ─────────────────────── */
+void motion_update(void) {
+    /* Reserved for future ISR-driven control loop */
+}
+
+bool motion_is_complete(void) { return motion_complete; }
+
+void motion_stop(void) {
+    motor_brake();
+    motion_complete = true;
+    current_speed = 0.0f;
 }
