@@ -1,8 +1,6 @@
 """
 Wall follower algorithms for MMS simulator.
-
-NOTE: CELESTA rules state wall-hugging will NOT find the destination.
-Use flood_fill for competition. These are for testing only.
+For testing only — will NOT find destination per CELESTA rules.
 """
 
 import API
@@ -13,8 +11,6 @@ DY = [1, 0, -1, 0]
 
 
 class LeftWallSolver:
-    """Always try left first, then forward, then right, then back."""
-
     def __init__(self, width, height):
         self.w = width
         self.h = height
@@ -36,8 +32,9 @@ class LeftWallSolver:
             self.y += DY[target]
             return "left"
         elif not wall_f:
-            self.x += DX[self.facing]
-            self.y += DY[self.facing]
+            target = self.facing
+            self.x += DX[target]
+            self.y += DY[target]
             return "forward"
         elif not wall_r:
             target = (self.facing + 1) % 4
@@ -54,8 +51,6 @@ class LeftWallSolver:
 
 
 class RightWallSolver:
-    """Always try right first, then forward, then left, then back."""
-
     def __init__(self, width, height):
         self.w = width
         self.h = height
@@ -77,8 +72,9 @@ class RightWallSolver:
             self.y += DY[target]
             return "right"
         elif not wall_f:
-            self.x += DX[self.facing]
-            self.y += DY[self.facing]
+            target = self.facing
+            self.x += DX[target]
+            self.y += DY[target]
             return "forward"
         elif not wall_l:
             target = (self.facing + 3) % 4

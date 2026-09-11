@@ -1,6 +1,5 @@
 """
 Dead-End Fill + Flood Fill hybrid for MMS simulator.
-Prunes dead-end corridors before running flood fill.
 """
 
 from collections import deque
@@ -46,6 +45,7 @@ class DeadEndFillSolver:
     def step(self, wall_l, wall_f, wall_r):
         self._update_walls(wall_l, wall_f, wall_r)
         self.visited[self.x][self.y] = True
+        API.setColor(self.x, self.y, "c")
 
         if (self.x, self.y) in self.goals:
             API.setColor(self.x, self.y, "g")
@@ -58,7 +58,23 @@ class DeadEndFillSolver:
         best_dir = self._best_direction()
         if best_dir is None:
             return "done"
-        return self._direction_to_action(best_dir)
+
+        action = self._get_action(best_dir)
+        self.x += DX[best_dir]
+        self.y += DY[best_dir]
+        self.facing = best_dir
+        return action
+
+    def _get_action(self, target_dir):
+        diff = (target_dir - self.facing) % 4
+        if diff == 0:
+            return "forward"
+        elif diff == 1:
+            return "right"
+        elif diff == 3:
+            return "left"
+        else:
+            return "turn_around"
 
     def _update_walls(self, wall_l, wall_f, wall_r):
         x, y, f = self.x, self.y, self.facing
@@ -134,28 +150,6 @@ class DeadEndFillSolver:
                     best_dist = self.distance[nx][ny]
                     best_dir = d
         return best_dir
-
-    def _direction_to_action(self, target_dir):
-        diff = (target_dir - self.facing) % 4
-        if diff == 0:
-            self.x += DX[target_dir]
-            self.y += DY[target_dir]
-            return "forward"
-        elif diff == 1:
-            self.facing = target_dir
-            self.x += DX[target_dir]
-            self.y += DY[target_dir]
-            return "right"
-        elif diff == 3:
-            self.facing = target_dir
-            self.x += DX[target_dir]
-            self.y += DY[target_dir]
-            return "left"
-        else:
-            self.facing = target_dir
-            self.x += DX[target_dir]
-            self.y += DY[target_dir]
-            return "turn_around"
 
     def _visualize(self):
         for x in range(self.w):

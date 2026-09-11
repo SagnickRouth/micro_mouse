@@ -7,9 +7,8 @@ Algorithms:
   right_wall     - Right wall follower
   dead_end_fill  - Dead-end pruning + flood fill
 
-Usage in MMS:
-  Run command: python main.py
-  Or: python main.py --alg left_wall
+Usage: python main.py
+   or: python main.py --alg left_wall
 """
 
 import sys
@@ -31,7 +30,6 @@ ALGORITHMS = {
 def main():
     global ALGORITHM
 
-    # Parse command line args
     for i, arg in enumerate(sys.argv):
         if arg == "--alg" and i + 1 < len(sys.argv):
             ALGORITHM = sys.argv[i + 1]
@@ -43,27 +41,18 @@ def main():
 
     width = API.mazeWidth()
     height = API.mazeHeight()
-    API.log("Maze size: {}x{}".format(width, height))
+    API.log("Maze: {}x{}".format(width, height))
 
     solver_class = ALGORITHMS.get(ALGORITHM)
     if solver_class is None:
         API.log("Unknown algorithm: " + ALGORITHM)
-        API.log("Available: " + str(list(ALGORITHMS.keys())))
         return
 
     solver = solver_class(width, height)
-    API.log("Solver: " + solver.__class__.__name__)
 
-    # Main loop
     while True:
-        if API.wasReset():
-            API.log("Reset detected")
-            API.ackReset()
-            solver = solver_class(width, height)
-            continue
-
-        wall_f = API.wallFront()
         wall_l = API.wallLeft()
+        wall_f = API.wallFront()
         wall_r = API.wallRight()
 
         action = solver.step(wall_l, wall_f, wall_r)
@@ -79,18 +68,13 @@ def main():
         elif action == "right":
             API.turnRight()
             API.moveForward()
-        elif action == "turn_left":
-            API.turnLeft()
-        elif action == "turn_right":
-            API.turnRight()
         elif action == "turn_around":
-            API.turnAround()
+            API.turnLeft()
+            API.turnLeft()
             API.moveForward()
         else:
             API.log("Unknown action: " + str(action))
             break
-
-    API.log("Run complete.")
 
 
 if __name__ == "__main__":

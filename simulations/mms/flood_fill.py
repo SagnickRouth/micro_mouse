@@ -1,6 +1,5 @@
 """
 Flood Fill maze solver for MMS simulator.
-BFS-based with live visualization.
 """
 
 from collections import deque
@@ -24,7 +23,7 @@ class FloodFillSolver:
         self.distance = [[255] * height for _ in range(width)]
         self.visited = [[False] * height for _ in range(width)]
 
-        # Outer boundary walls
+        # Outer boundaries
         for i in range(width):
             self.walls[i][0] |= WALL_S
             self.walls[i][height - 1] |= WALL_N
@@ -32,7 +31,7 @@ class FloodFillSolver:
             self.walls[0][j] |= WALL_W
             self.walls[width - 1][j] |= WALL_E
 
-        # Goal: center of maze
+        # Goal: center
         self.goals = []
         cx, cy = width // 2, height // 2
         for gx in range(cx - 1, cx + 1):
@@ -46,23 +45,47 @@ class FloodFillSolver:
         API.setColor(0, 0, "g")
 
     def step(self, wall_l, wall_f, wall_r):
+        # Update walls at current position
         self._update_walls(wall_l, wall_f, wall_r)
         self.visited[self.x][self.y] = True
         API.setColor(self.x, self.y, "c")
 
+        # Check goal
         if (self.x, self.y) in self.goals:
             API.setColor(self.x, self.y, "g")
+            API.log("Reached goal at ({},{})".format(self.x, self.y))
             return "done"
 
+        # Recompute distances
         self._flood_fill()
         self._visualize()
 
+        # Pick best neighbor
         best_dir = self._best_direction()
         if best_dir is None:
-            API.log("No path found!")
+            API.log("No path found from ({},{})".format(self.x, self.y))
             return "done"
 
-        return self._direction_to_action(best_dir)
+        # Determine turn action, update position AFTER the move will happen
+        action = self._get_action(best_dir)
+
+        # Update internal position (the main loop will execute the physical move)
+        self.x += DX[best_dir]
+        self.y += DY[best_dir]
+        self.facing = best_dir
+
+        return action
+
+    def _get_action(self, target_dir):
+        diff = (target_dir - self.facing) % 4
+        if diff == 0:
+            return "forward"
+        elif diff == 1:
+            return "right"
+        elif diff == 3:
+            return "left"
+        else:
+            return "turn_around"
 
     def _update_walls(self, wall_l, wall_f, wall_r):
         x, y, f = self.x, self.y, self.facing
@@ -73,9 +96,7 @@ class FloodFillSolver:
         for direction, has_wall in [(front, wall_f), (left, wall_l), (right, wall_r)]:
             if has_wall:
                 self._set_wall(x, y, direction)
-            dir_char = "nesw"[direction]
-            if has_wall:
-                API.setWall(x, y, dir_char)
+                API.setWall(x, y, "nesw"[direction])
 
     def _set_wall(self, x, y, direction):
         bit = [WALL_N, WALL_E, WALL_S, WALL_W][direction]
@@ -119,28 +140,6 @@ class FloodFillSolver:
                     best_dist = self.distance[nx][ny]
                     best_dir = direction
         return best_dir
-
-    def _direction_to_action(self, target_dir):
-        diff = (target_dir - self.facing) % 4
-        if diff == 0:
-            self.x += DX[target_dir]
-            self.y += DY[target_dir]
-            return "forward"
-        elif diff == 1:
-            self.facing = target_dir
-            self.x += DX[target_dir]
-            self.y += DY[target_dir]
-            return "right"
-        elif diff == 3:
-            self.facing = target_dir
-            self.x += DX[target_dir]
-            self.y += DY[target_dir]
-            return "left"
-        else:
-            self.facing = target_dir
-            self.x += DX[target_dir]
-            self.y += DY[target_dir]
-            return "turn_around"
 
     def _visualize(self):
         for x in range(self.w):
