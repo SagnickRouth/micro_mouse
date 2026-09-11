@@ -1,116 +1,114 @@
-"""
-MMS (Mackorone's Micromouse Simulator) API wrapper.
-
-Communication protocol:
-  - Commands are sent via stdout (print)
-  - Responses are read via stdin (input)
-  - Debug logging goes to stderr
-
-Repo: https://github.com/mackorone/mms
-"""
-
 import sys
 
+class MouseCrashedError(Exception):
+    pass
 
-def log(msg):
-    """Log a debug message (appears in simulator console)."""
-    sys.stderr.write(str(msg) + "\n")
-    sys.stderr.flush()
+def command(args, return_type=None):
+    line = " ".join([str(x) for x in args]) + "\n"
+    sys.stdout.write(line)
+    sys.stdout.flush()
+    if return_type:
+        response = sys.stdin.readline().strip()
+        if return_type == bool:
+            return response == "true"
+        return return_type(response)
 
-
-def _command(cmd):
-    """Send a command and return the response."""
-    print(cmd, flush=True)
-    return sys.stdin.readline().strip()
-
-
-def _command_no_response(cmd):
-    """Send a command that has no response."""
-    print(cmd, flush=True)
-
-
-# Maze Info
 def mazeWidth():
-    return int(_command("mazeWidth"))
-
+    return command(args=["mazeWidth"], return_type=int)
 
 def mazeHeight():
-    return int(_command("mazeHeight"))
+    return command(args=["mazeHeight"], return_type=int)
 
+def checkWall(wallCommand, half_steps_away=None):
+    args = [wallCommand]
+    if half_steps_away is not None:
+        args.append(half_steps_away)
+    return command(args, return_type=bool)
 
-# Wall Queries
-def wallFront():
-    return _command("wallFront") == "true"
+def wallFront(half_steps_away=None):
+    return checkWall("wallFront", half_steps_away)
 
+def wallBack(half_steps_away=None):
+    return checkWall("wallBack", half_steps_away)
 
-def wallRight():
-    return _command("wallRight") == "true"
+def wallLeft(half_steps_away=None):
+    return checkWall("wallLeft", half_steps_away)
 
+def wallRight(half_steps_away=None):
+    return checkWall("wallRight", half_steps_away)
 
-def wallLeft():
-    return _command("wallLeft") == "true"
+def wallFrontLeft(half_steps_away=None):
+    return checkWall("wallFrontLeft", half_steps_away)
 
+def wallFrontRight(half_steps_away=None):
+    return checkWall("wallFrontRight", half_steps_away)
 
-# Movement
-def moveForward(n=1):
-    for _ in range(n):
-        resp = _command("moveForward")
-        if resp == "crash":
-            log("CRASH!")
-            return
+def wallBackLeft(half_steps_away=None):
+    return checkWall("wallBackLeft", half_steps_away)
 
+def wallBackRight(half_steps_away=None):
+    return checkWall("wallBackRight", half_steps_away)
+
+def moveForward(distance=None):
+    args = ["moveForward"]
+    if distance is not None:
+        args.append(distance)
+    response = command(args=args, return_type=str)
+    if response == "crash":
+        raise MouseCrashedError()
+
+def moveForwardHalf(num_half_steps=None):
+    args = ["moveForwardHalf"]
+    if num_half_steps is not None:
+        args.append(num_half_steps)
+    response = command(args=args, return_type=str)
+    if response == "crash":
+        raise MouseCrashedError()
 
 def turnRight():
-    _command_no_response("turnRight")
-
+    command(args=["turnRight"], return_type=str)
 
 def turnLeft():
-    _command_no_response("turnLeft")
+    command(args=["turnLeft"], return_type=str)
 
-
-def turnAround():
-    """180 degree turn."""
-    turnRight()
+def turnRight90():
     turnRight()
 
+def turnLeft90():
+    turnLeft()
 
-# Cell Visualization
+def turnRight45():
+    command(args=["turnRight45"], return_type=str)
+
+def turnLeft45():
+    command(args=["turnLeft45"], return_type=str)
+
 def setWall(x, y, direction):
-    _command_no_response("setWall {} {} {}".format(x, y, direction))
-
+    command(args=["setWall", x, y, direction])
 
 def clearWall(x, y, direction):
-    _command_no_response("clearWall {} {} {}".format(x, y, direction))
-
+    command(args=["clearWall", x, y, direction])
 
 def setColor(x, y, color):
-    _command_no_response("setColor {} {} {}".format(x, y, color))
-
+    command(args=["setColor", x, y, color])
 
 def clearColor(x, y):
-    _command_no_response("clearColor {} {}".format(x, y))
-
+    command(args=["clearColor", x, y])
 
 def clearAllColor():
-    _command_no_response("clearAllColor")
-
+    command(args=["clearAllColor"])
 
 def setText(x, y, text):
-    _command_no_response("setText {} {} {}".format(x, y, text))
-
+    command(args=["setText", x, y, text])
 
 def clearText(x, y):
-    _command_no_response("clearText {} {}".format(x, y))
-
+    command(args=["clearText", x, y])
 
 def clearAllText():
-    _command_no_response("clearAllText")
+    command(args=["clearAllText"])
 
-
-# Reset Detection
 def wasReset():
-    return _command("wasReset") == "true"
-
+    return command(args=["wasReset"], return_type=bool)
 
 def ackReset():
-    _command_no_response("ackReset")
+    command(args=["ackReset"], return_type=str)
