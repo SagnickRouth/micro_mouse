@@ -1,6 +1,7 @@
 import API
 import sys
 from collections import deque
+import heapq
 
 def log(string):
     sys.stderr.write("{}\n".format(string))
@@ -10,6 +11,12 @@ NORTH, EAST, SOUTH, WEST = 0, 1, 2, 3
 DX = [0, 1, 0, -1]
 DY = [1, 0, -1, 0]
 WALL_CHARS = ["n", "e", "s", "w"]
+
+# Turn cost penalties (tunable)
+# Higher = more penalty for turning = prefers straighter paths
+TURN_COST_90 = 3       # cost of a 90 degree turn
+TURN_COST_180 = 6      # cost of a 180 degree turn
+MOVE_COST = 2           # cost of moving one cell forward
 
 width = 0
 height = 0
@@ -55,12 +62,10 @@ def has_wall(wx, wy, d):
     return bool(walls[wx][wy] & [1, 2, 4, 8][d])
 
 def scan_walls():
-    """Scan walls at current position. Returns True if any NEW wall found."""
     new_walls = False
     front = facing
     left = (facing + 3) % 4
     right = (facing + 1) % 4
-
     if API.wallFront():
         if not has_wall(x, y, front):
             new_walls = True
@@ -76,9 +81,9 @@ def scan_walls():
             new_walls = True
         set_wall(x, y, right)
         API.setWall(x, y, WALL_CHARS[right])
-
     return new_walls
 
+# ── Standard BFS Flood Fill (for search/return phases) ──
 def flood_fill(goals):
     global dist
     dist = [[255] * height for _ in range(width)]
@@ -98,7 +103,75 @@ def flood_fill(goals):
                     dist[nx][ny] = d + 1
                     queue.append((nx, ny))
 
-def show_distances(goals, color_visited="C", color_goal="Y"):
+# ── Turn-Penalized Dijkstra (for speed run) ─────────────
+# State: (x, y, facing_direction)
+# This finds the path that minimizes total time considering
+# that turns are expensive (robot must stop, rotate, restart)
+
+def dijkstra_turn_penalty(goals, start_x, start_y, start_facing):
+    """Returns a direction-aware distance map and predecessor map.
+    dist_map[x][y][d] = minimum cost to reach (x,y) facing direction d.
+    prev_map[x][y][d] = (px, py, pd) = where we came from."""
+
+    INF = 999999
+    dist_map = [[[INF]*4 for _ in range(height)] for _ in range(width)]
+    prev_map = [[[None]*4 for _ in range(height)] for _ in range(width)]
+
+    # Start: we're at (start_x, start_y) facing start_facing, cost 0
+    dist_map[start_x][start_y][start_facing] = 0
+
+    # Priority queue: (cost, x, y, facing)
+    pq = [(0, start_x, start_y, start_facing)]
+
+    while pq:
+        cost, cx, cy, cf = heapq.heappop(pq)
+
+        if cost > dist_map[cx][cy][cf]:
+            continue
+
+        # Check if we reached a goal
+        if (cx, cy) in goals:
+            continue  # still explore to find optimal for all goals
+
+        # Try moving in each direction
+        for new_dir in range(4):
+            if has_wall(cx, cy, new_dir):
+                continue
+
+            nx, ny = cx + DX[new_dir], cy + DY[new_dir]
+            if not (0 <= nx < width and 0 <= ny < height):
+                continue
+
+            # Calculate turn cost
+            turn_diff = (new_dir - cf) % 4
+            if turn_diff == 0:
+                turn_cost = 0               # straight ahead
+            elif turn_diff == 1 or turn_diff == 3:
+                turn_cost = TURN_COST_90    # 90 degree turn
+            else:
+                turn_cost = TURN_COST_180   # 180 degree turn
+
+            new_cost = cost + MOVE_COST + turn_cost
+
+            if new_cost < dist_map[nx][ny][new_dir]:
+                dist_map[nx][ny][new_dir] = new_cost
+                prev_map[nx][ny][new_dir] = (cx, cy, cf)
+                heapq.heappush(pq, (new_cost, nx, ny, new_dir))
+
+    return dist_map, prev_map
+
+def reconstruct_path(prev_map, goals, start_x, start_y):
+    """Find the goal cell+direction with lowest cost, trace back path."""
+    # Find best goal entry
+    INF = 999999
+    best_cost = INF
+    best_gx, best_gy, best_gd = -1, -1, -1
+
+    # We need dist_map too, let's get it from the caller
+    # Actually, just trace all goals
+    return None  # handled inline below
+
+def show_distances_simple(goals, color_visited="C", color_goal="Y"):
     for vx in range(width):
         for vy in range(height):
             d = dist[vx][vy]
@@ -128,7 +201,6 @@ def move_one():
     y += DY[facing]
 
 def best_open_neighbor(goals_for_ff):
-    """Find best direction toward goal that has no wall."""
     flood_fill(goals_for_ff)
     best_d = 255
     best_dir = None
@@ -178,90 +250,121 @@ def navigate_to(targets, phase_name, path_color):
     while True:
         scan_walls()
         visited[x][y] = True
-
         if (x, y) in targets:
             API.setColor(x, y, "G")
             log("{}: REACHED ({},{})!".format(phase_name, x, y))
             return True
-
         API.setColor(x, y, path_color)
-
         d = best_open_neighbor(targets)
         if d is not None:
-            show_distances(targets)
+            show_distances_simple(targets)
             turn_to(d)
             move_one()
             continue
-
         d = explore_neighbor()
         if d is not None:
             turn_to(d)
             move_one()
             continue
-
         d = backtrack_to_unvisited()
         if d is not None:
             turn_to(d)
             move_one()
             continue
-
-        log("{}: STUCK at ({},{})".format(phase_name, x, y))
+        log("{}: STUCK".format(phase_name))
         return False
 
-def speed_run(targets, phase_name, path_color):
-    """Speed run: follow shortest path, but SCAN WALLS at each cell.
-    If new walls discovered, recompute flood fill."""
-    log("{}: speed run to {}".format(phase_name, targets))
+# ── Speed Run with Turn-Penalized Pathfinding ──────────
+def speed_run_optimized(targets, phase_name):
+    """Speed run using Dijkstra with turn penalties.
+    Finds path that minimizes actual traversal time."""
+    log("{}: computing turn-optimized path...".format(phase_name))
 
+    dist_map, prev_map = dijkstra_turn_penalty(targets, x, y, facing)
+
+    # Find best goal entry (lowest cost across all facing directions)
+    INF = 999999
+    best_cost = INF
+    best_gx, best_gy, best_gd = -1, -1, -1
+    for gx, gy in targets:
+        for gd in range(4):
+            if dist_map[gx][gy][gd] < best_cost:
+                best_cost = dist_map[gx][gy][gd]
+                best_gx, best_gy, best_gd = gx, gy, gd
+
+    if best_cost >= INF:
+        log("{}: no path to goal!".format(phase_name))
+        return False
+
+    log("{}: optimal cost = {} (with turn penalties)".format(phase_name, best_cost))
+
+    # Also compute simple BFS distance for comparison
     flood_fill(targets)
-    show_distances(targets, color_visited="c", color_goal="Y")
+    simple_dist = dist[x][y]
+    log("{}: simple BFS distance = {} cells".format(phase_name, simple_dist))
 
-    while True:
-        # Always scan walls — even during speed run!
+    # Reconstruct path
+    path = []
+    cx, cy, cd = best_gx, best_gy, best_gd
+    while (cx, cy) != (x, y) or cd != facing:
+        path.append((cx, cy, cd))
+        prev = prev_map[cx][cy][cd]
+        if prev is None:
+            break
+        cx, cy, cd = prev
+    path.reverse()
+
+    # Count turns in path
+    turns = 0
+    prev_dir = facing
+    for px, py, pd in path:
+        if pd != prev_dir:
+            turns += 1
+        prev_dir = pd
+
+    log("{}: path length = {} cells, {} turns".format(phase_name, len(path), turns))
+
+    # Visualize the planned path
+    for px, py, pd in path:
+        API.setColor(px, py, "o")  # orange = planned path
+    for gx, gy in targets:
+        API.setColor(gx, gy, "Y")
+
+    # Execute the path
+    for px, py, pd in path:
+        # Scan walls first (safety)
         new_walls = scan_walls()
-
-        if (x, y) in targets:
-            API.setColor(x, y, "G")
-            log("{}: REACHED ({},{})!".format(phase_name, x, y))
-            return True
-
-        API.setColor(x, y, path_color)
-
-        # If new walls found, recompute path
         if new_walls:
-            log("{}: new wall at ({},{}), recomputing...".format(phase_name, x, y))
-            flood_fill(targets)
-            show_distances(targets, color_visited="c", color_goal="Y")
+            log("{}: new wall found at ({},{}), replanning...".format(phase_name, x, y))
+            # Replan from current position
+            return speed_run_optimized(targets, phase_name)
 
-        # Pick best neighbor (lowest distance, no wall)
-        best_d = 255
-        best_dir = None
-        for d in range(4):
-            if has_wall(x, y, d):
-                continue
-            nx, ny = x + DX[d], y + DY[d]
-            if 0 <= nx < width and 0 <= ny < height:
-                if dist[nx][ny] < best_d:
-                    best_d = dist[nx][ny]
-                    best_dir = d
-
-        if best_dir is None:
-            log("{}: no path from ({},{})!".format(phase_name, x, y))
-            return False
-
-        turn_to(best_dir)
+        API.setColor(x, y, "G")
+        turn_to(pd)
         move_one()
 
+    # Check if we reached goal
+    scan_walls()
+    if (x, y) in targets:
+        API.setColor(x, y, "G")
+        log("{}: REACHED ({},{})!".format(phase_name, x, y))
+        return True
+
+    log("{}: path ended but not at goal".format(phase_name))
+    return False
+
 # ════════════════════════════════════════════════════════
-# FLOOD FILL — 3-Phase
+# FLOOD FILL — 3-Phase with Turn-Optimized Speed Run
 # ════════════════════════════════════════════════════════
 def run_flood_fill():
     goals = get_goals()
     start = [(0, 0)]
 
     log("=" * 50)
-    log("FLOOD FILL - 3-Phase Run")
+    log("FLOOD FILL - 3-Phase (Turn-Optimized Speed Run)")
     log("Goals: {}".format(goals))
+    log("Turn cost 90: {}, 180: {}, Move: {}".format(
+        TURN_COST_90, TURN_COST_180, MOVE_COST))
     log("=" * 50)
 
     API.setColor(0, 0, "G")
@@ -270,9 +373,8 @@ def run_flood_fill():
 
     # Phase 1: Search
     log("")
-    log(">>> PHASE 1: SEARCH RUN (start -> goal)")
+    log(">>> PHASE 1: SEARCH RUN (explore -> goal)")
     if not navigate_to(goals, "SEARCH", "C"):
-        log("Search run failed!")
         return
     log("Phase 1 complete!")
 
@@ -283,22 +385,18 @@ def run_flood_fill():
     for gx, gy in goals:
         API.setColor(gx, gy, "Y")
     if not navigate_to(start, "RETURN", "B"):
-        log("Return run failed!")
         return
     log("Phase 2 complete!")
 
-    # Phase 3: Speed run
+    # Phase 3: Speed run with turn-penalized Dijkstra
     log("")
-    log(">>> PHASE 3: SPEED RUN (shortest path)")
+    log(">>> PHASE 3: SPEED RUN (turn-optimized shortest path)")
     API.clearAllColor()
     API.clearAllText()
     for gx, gy in goals:
         API.setColor(gx, gy, "Y")
-    flood_fill(goals)
-    show_distances(goals, color_visited="c", color_goal="Y")
-    log("Optimal distance: {} cells".format(dist[0][0]))
-    if not speed_run(goals, "SPEED", "G"):
-        log("Speed run failed!")
+
+    if not speed_run_optimized(goals, "SPEED"):
         return
 
     log("")
@@ -306,7 +404,7 @@ def run_flood_fill():
     log("ALL 3 PHASES COMPLETE!")
     log("=" * 50)
 
-# ── Left Wall Follower ─────────────────────────────────
+# ── Wall Followers (unchanged) ─────────────────────────
 def run_left_wall():
     log("Left Wall Follower")
     API.setColor(0, 0, "G")
@@ -321,7 +419,6 @@ def run_left_wall():
             API.turnRight()
         move_one()
 
-# ── Right Wall Follower ────────────────────────────────
 def run_right_wall():
     log("Right Wall Follower")
     API.setColor(0, 0, "G")
@@ -336,12 +433,11 @@ def run_right_wall():
             API.turnLeft()
         move_one()
 
-# ── Dead-End Fill + Flood Fill — 3-Phase ───────────────
+# ── Dead-End Fill — 3-Phase (also turn-optimized) ──────
 def run_dead_end_fill():
     goals = get_goals()
     start = [(0, 0)]
-    log("Dead-End Fill - 3-Phase Run")
-    log("Goals: {}".format(goals))
+    log("Dead-End Fill - 3-Phase (Turn-Optimized)")
 
     API.setColor(0, 0, "G")
     for gx, gy in goals:
@@ -355,70 +451,53 @@ def run_dead_end_fill():
             changed = False
             for dx in range(width):
                 for dy in range(height):
-                    if dead_end[dx][dy]:
-                        continue
-                    if (dx, dy) in goals or (dx == 0 and dy == 0):
-                        continue
-                    if not visited[dx][dy]:
-                        continue
-                    open_count = 0
+                    if dead_end[dx][dy]: continue
+                    if (dx, dy) in goals or (dx == 0 and dy == 0): continue
+                    if not visited[dx][dy]: continue
+                    oc = 0
                     for d in range(4):
                         if not has_wall(dx, dy, d):
                             nx, ny = dx + DX[d], dy + DY[d]
                             if 0 <= nx < width and 0 <= ny < height:
-                                if not dead_end[nx][ny]:
-                                    open_count += 1
-                    if open_count <= 1:
+                                if not dead_end[nx][ny]: oc += 1
+                    if oc <= 1:
                         dead_end[dx][dy] = True
                         API.setColor(dx, dy, "a")
                         changed = True
 
-    # Phase 1: Search with dead-end pruning
+    # Phase 1
     log(">>> PHASE 1: SEARCH with dead-end fill")
     while True:
         scan_walls()
         visited[x][y] = True
-
         if (x, y) in goals:
             API.setColor(x, y, "G")
-            log("SEARCH: REACHED GOAL!")
+            log("GOAL REACHED!")
             break
-
         API.setColor(x, y, "C")
         dead_end_pass()
-
         d = best_open_neighbor(goals)
+        if d is None: d = explore_neighbor()
+        if d is None: d = backtrack_to_unvisited()
         if d is None:
-            d = explore_neighbor()
-        if d is None:
-            d = backtrack_to_unvisited()
-        if d is None:
-            log("STUCK")
-            return
-
-        show_distances(goals)
+            log("STUCK"); return
+        show_distances_simple(goals)
         turn_to(d)
         move_one()
 
-    # Phase 2: Return
-    log(">>> PHASE 2: RETURN to start")
+    # Phase 2
+    log(">>> PHASE 2: RETURN")
     API.clearAllColor()
-    for gx, gy in goals:
-        API.setColor(gx, gy, "Y")
-    if not navigate_to(start, "RETURN", "B"):
-        return
+    if not navigate_to(start, "RETURN", "B"): return
 
-    # Phase 3: Speed run
-    log(">>> PHASE 3: SPEED RUN")
+    # Phase 3: Turn-optimized speed run
+    log(">>> PHASE 3: SPEED RUN (turn-optimized)")
     API.clearAllColor()
     API.clearAllText()
     for gx, gy in goals:
         API.setColor(gx, gy, "Y")
-    flood_fill(goals)
-    show_distances(goals, color_visited="c")
-    log("Optimal distance: {} cells".format(dist[0][0]))
-    speed_run(goals, "SPEED", "G")
-    log("ALL PHASES COMPLETE!")
+    speed_run_optimized(goals, "SPEED")
+    log("COMPLETE!")
 
 # ── Main ──────────────────────────────────────────────
 ALGORITHMS = {
@@ -435,12 +514,10 @@ def main():
             algorithm = sys.argv[i + 1]
         elif arg.startswith("--alg="):
             algorithm = arg.split("=")[1]
-
     init_maze()
     log("=== MICROMOUSE MMS ===")
     log("Maze: {}x{}".format(width, height))
     log("Algorithm: {}".format(algorithm))
-
     runner = ALGORITHMS.get(algorithm)
     if runner is None:
         log("Unknown: {}. Available: {}".format(algorithm, list(ALGORITHMS.keys())))
