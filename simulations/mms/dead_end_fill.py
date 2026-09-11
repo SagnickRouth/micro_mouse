@@ -1,7 +1,7 @@
-\"\"\"
+"""
 Dead-End Fill + Flood Fill hybrid for MMS simulator.
 Prunes dead-end corridors before running flood fill.
-\"\"\"
+"""
 
 from collections import deque
 import API
@@ -13,7 +13,7 @@ WALL_N, WALL_E, WALL_S, WALL_W = 1, 2, 4, 8
 
 
 class DeadEndFillSolver:
-    def __init__(self, width: int, height: int):
+    def __init__(self, width, height):
         self.w = width
         self.h = height
         self.x = 0
@@ -25,7 +25,6 @@ class DeadEndFillSolver:
         self.visited = [[False] * height for _ in range(width)]
         self.dead_end = [[False] * height for _ in range(width)]
 
-        # Outer boundaries
         for i in range(width):
             self.walls[i][0] |= WALL_S
             self.walls[i][height - 1] |= WALL_N
@@ -33,7 +32,6 @@ class DeadEndFillSolver:
             self.walls[0][j] |= WALL_W
             self.walls[width - 1][j] |= WALL_E
 
-        # Goals: center
         self.goals = []
         cx, cy = width // 2, height // 2
         for gx in range(cx - 1, cx + 1):
@@ -53,17 +51,13 @@ class DeadEndFillSolver:
             API.setColor(self.x, self.y, "g")
             return "done"
 
-        # Dead-end fill pass
         self._dead_end_fill()
-
-        # Flood fill on pruned maze
         self._flood_fill()
         self._visualize()
 
         best_dir = self._best_direction()
         if best_dir is None:
             return "done"
-
         return self._direction_to_action(best_dir)
 
     def _update_walls(self, wall_l, wall_f, wall_r):
@@ -108,7 +102,7 @@ class DeadEndFillSolver:
                         continue
                     if self._count_open(x, y) <= 1:
                         self.dead_end[x][y] = True
-                        API.setColor(x, y, "a")  # Gray for dead-end
+                        API.setColor(x, y, "a")
                         changed = True
 
     def _flood_fill(self):
@@ -144,13 +138,24 @@ class DeadEndFillSolver:
     def _direction_to_action(self, target_dir):
         diff = (target_dir - self.facing) % 4
         if diff == 0:
-            self.x += DX[target_dir]; self.y += DY[target_dir]; return "forward"
+            self.x += DX[target_dir]
+            self.y += DY[target_dir]
+            return "forward"
         elif diff == 1:
-            self.facing = target_dir; self.x += DX[target_dir]; self.y += DY[target_dir]; return "right"
+            self.facing = target_dir
+            self.x += DX[target_dir]
+            self.y += DY[target_dir]
+            return "right"
         elif diff == 3:
-            self.facing = target_dir; self.x += DX[target_dir]; self.y += DY[target_dir]; return "left"
+            self.facing = target_dir
+            self.x += DX[target_dir]
+            self.y += DY[target_dir]
+            return "left"
         else:
-            self.facing = target_dir; self.x += DX[target_dir]; self.y += DY[target_dir]; return "turn_around"
+            self.facing = target_dir
+            self.x += DX[target_dir]
+            self.y += DY[target_dir]
+            return "turn_around"
 
     def _visualize(self):
         for x in range(self.w):

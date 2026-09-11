@@ -1,10 +1,9 @@
-\"\"\"
+"""
 Wall follower algorithms for MMS simulator.
-Left and Right wall followers.
 
-NOTE: CELESTA'26 rules state wall-hugging will NOT find the destination.
-These are for testing/debugging only. Use flood_fill for competition.
-\"\"\"
+NOTE: CELESTA rules state wall-hugging will NOT find the destination.
+Use flood_fill for competition. These are for testing only.
+"""
 
 import API
 
@@ -14,9 +13,9 @@ DY = [1, 0, -1, 0]
 
 
 class LeftWallSolver:
-    \"\"\"Always try to turn left first, then forward, then right, then back.\"\"\"
+    """Always try left first, then forward, then right, then back."""
 
-    def __init__(self, width: int, height: int):
+    def __init__(self, width, height):
         self.w = width
         self.h = height
         self.x = 0
@@ -25,7 +24,7 @@ class LeftWallSolver:
         self.step_count = 0
         API.setColor(0, 0, "g")
 
-    def step(self, wall_l: bool, wall_f: bool, wall_r: bool) -> str:
+    def step(self, wall_l, wall_f, wall_r):
         self.step_count += 1
         API.setText(self.x, self.y, str(self.step_count))
         API.setColor(self.x, self.y, "c")
@@ -55,9 +54,9 @@ class LeftWallSolver:
 
 
 class RightWallSolver:
-    \"\"\"Always try to turn right first, then forward, then left, then back.\"\"\"
+    """Always try right first, then forward, then left, then back."""
 
-    def __init__(self, width: int, height: int):
+    def __init__(self, width, height):
         self.w = width
         self.h = height
         self.x = 0
@@ -66,7 +65,7 @@ class RightWallSolver:
         self.step_count = 0
         API.setColor(0, 0, "g")
 
-    def step(self, wall_l: bool, wall_f: bool, wall_r: bool) -> str:
+    def step(self, wall_l, wall_f, wall_r):
         self.step_count += 1
         API.setText(self.x, self.y, str(self.step_count))
         API.setColor(self.x, self.y, "m")

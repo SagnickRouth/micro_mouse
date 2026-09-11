@@ -1,4 +1,4 @@
-\"\"\"
+"""
 MMS (Mackorone's Micromouse Simulator) API wrapper.
 
 Communication protocol:
@@ -7,52 +7,52 @@ Communication protocol:
   - Debug logging goes to stderr
 
 Repo: https://github.com/mackorone/mms
-\"\"\"
+"""
 
 import sys
 
 
-def log(msg: str) -> None:
-    \"\"\"Log a debug message (appears in simulator console).\"\"\"
-    sys.stderr.write(f"{msg}\n")
+def log(msg):
+    """Log a debug message (appears in simulator console)."""
+    sys.stderr.write(str(msg) + "\n")
     sys.stderr.flush()
 
 
-def _command(cmd: str) -> str:
-    \"\"\"Send a command and return the response.\"\"\"
+def _command(cmd):
+    """Send a command and return the response."""
     print(cmd, flush=True)
     return sys.stdin.readline().strip()
 
 
-def _command_no_response(cmd: str) -> None:
-    \"\"\"Send a command that has no response.\"\"\"
+def _command_no_response(cmd):
+    """Send a command that has no response."""
     print(cmd, flush=True)
 
 
-# ── Maze Info ──────────────────────────────────────────────
-def mazeWidth() -> int:
+# Maze Info
+def mazeWidth():
     return int(_command("mazeWidth"))
 
 
-def mazeHeight() -> int:
+def mazeHeight():
     return int(_command("mazeHeight"))
 
 
-# ── Wall Queries ───────────────────────────────────────────
-def wallFront() -> bool:
+# Wall Queries
+def wallFront():
     return _command("wallFront") == "true"
 
 
-def wallRight() -> bool:
+def wallRight():
     return _command("wallRight") == "true"
 
 
-def wallLeft() -> bool:
+def wallLeft():
     return _command("wallLeft") == "true"
 
 
-# ── Movement ──────────────────────────────────────────────
-def moveForward(n: int = 1) -> None:
+# Movement
+def moveForward(n=1):
     for _ in range(n):
         resp = _command("moveForward")
         if resp == "crash":
@@ -60,60 +60,57 @@ def moveForward(n: int = 1) -> None:
             return
 
 
-def turnRight() -> None:
+def turnRight():
     _command_no_response("turnRight")
 
 
-def turnLeft() -> None:
+def turnLeft():
     _command_no_response("turnLeft")
 
 
-def turnAround() -> None:
-    \"\"\"180° turn (two right turns).\"\"\"
+def turnAround():
+    """180 degree turn."""
     turnRight()
     turnRight()
 
 
-# ── Cell Visualization ────────────────────────────────────
-def setWall(x: int, y: int, direction: str) -> None:
-    \"\"\"Display a wall. direction = 'n', 'e', 's', 'w'.\"\"\"
-    _command_no_response(f"setWall {x} {y} {direction}")
+# Cell Visualization
+def setWall(x, y, direction):
+    _command_no_response("setWall {} {} {}".format(x, y, direction))
 
 
-def clearWall(x: int, y: int, direction: str) -> None:
-    _command_no_response(f"clearWall {x} {y} {direction}")
+def clearWall(x, y, direction):
+    _command_no_response("clearWall {} {} {}".format(x, y, direction))
 
 
-def setColor(x: int, y: int, color: str) -> None:
-    \"\"\"Set cell color. Colors: r, g, b, c, m, y, w, o, a (gray), etc.\"\"\"
-    _command_no_response(f"setColor {x} {y} {color}")
+def setColor(x, y, color):
+    _command_no_response("setColor {} {} {}".format(x, y, color))
 
 
-def clearColor(x: int, y: int) -> None:
-    _command_no_response(f"clearColor {x} {y}")
+def clearColor(x, y):
+    _command_no_response("clearColor {} {}".format(x, y))
 
 
-def clearAllColor() -> None:
+def clearAllColor():
     _command_no_response("clearAllColor")
 
 
-def setText(x: int, y: int, text: str) -> None:
-    \"\"\"Display text in a cell (max ~10 chars).\"\"\"
-    _command_no_response(f"setText {x} {y} {text}")
+def setText(x, y, text):
+    _command_no_response("setText {} {} {}".format(x, y, text))
 
 
-def clearText(x: int, y: int) -> None:
-    _command_no_response(f"clearText {x} {y}")
+def clearText(x, y):
+    _command_no_response("clearText {} {}".format(x, y))
 
 
-def clearAllText() -> None:
+def clearAllText():
     _command_no_response("clearAllText")
 
 
-# ── Reset Detection ───────────────────────────────────────
-def wasReset() -> bool:
+# Reset Detection
+def wasReset():
     return _command("wasReset") == "true"
 
 
-def ackReset() -> None:
+def ackReset():
     _command_no_response("ackReset")
