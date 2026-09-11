@@ -1,5 +1,6 @@
 """
 Dead-End Fill + Flood Fill hybrid for MMS simulator.
+Fixed: proper backtracking when no direct path exists.
 """
 
 from collections import deque
@@ -18,6 +19,7 @@ class DeadEndFillSolver:
         self.x = 0
         self.y = 0
         self.facing = NORTH
+        self.step_count = 0
 
         self.walls = [[0] * height for _ in range(width)]
         self.distance = [[255] * height for _ in range(width)]
@@ -33,48 +35,72 @@ class DeadEndFillSolver:
 
         self.goals = []
         cx, cy = width // 2, height // 2
-        for gx in range(cx - 1, cx + 1):
-            for gy in range(cy - 1, cy + 1):
+        for gx in [cx - 1, cx]:
+            for gy in [cy - 1, cy]:
                 if 0 <= gx < width and 0 <= gy < height:
                     self.goals.append((gx, gy))
 
+        API.log("Goals: " + str(self.goals))
         self._flood_fill()
         self._visualize()
         API.setColor(0, 0, "g")
 
     def step(self, wall_l, wall_f, wall_r):
+        self.step_count += 1
         self._update_walls(wall_l, wall_f, wall_r)
         self.visited[self.x][self.y] = True
-        API.setColor(self.x, self.y, "c")
 
         if (self.x, self.y) in self.goals:
             API.setColor(self.x, self.y, "g")
+            API.log("GOAL REACHED in {} steps".format(self.step_count))
             return "done"
 
+        API.setColor(self.x, self.y, "c")
         self._dead_end_fill()
         self._flood_fill()
         self._visualize()
 
         best_dir = self._best_direction()
-        if best_dir is None:
-            return "done"
+        if best_dir is not None:
+            action = self._get_action(best_dir)
+            self.x += DX[best_dir]
+            self.y += DY[best_dir]
+            self.facing = best_dir
+            return action
 
-        action = self._get_action(best_dir)
-        self.x += DX[best_dir]
-        self.y += DY[best_dir]
-        self.facing = best_dir
-        return action
+        # Explore unvisited
+        for direction in range(4):
+            if self._has_wall(self.x, self.y, direction):
+                continue
+            nx, ny = self.x + DX[direction], self.y + DY[direction]
+            if 0 <= nx < self.w and 0 <= ny < self.h:
+                if not self.visited[nx][ny]:
+                    action = self._get_action(direction)
+                    self.x += DX[direction]
+                    self.y += DY[direction]
+                    self.facing = direction
+                    return action
+
+        # Backtrack to any neighbor
+        for direction in range(4):
+            if self._has_wall(self.x, self.y, direction):
+                continue
+            nx, ny = self.x + DX[direction], self.y + DY[direction]
+            if 0 <= nx < self.w and 0 <= ny < self.h:
+                action = self._get_action(direction)
+                self.x += DX[direction]
+                self.y += DY[direction]
+                self.facing = direction
+                return action
+
+        return "done"
 
     def _get_action(self, target_dir):
         diff = (target_dir - self.facing) % 4
-        if diff == 0:
-            return "forward"
-        elif diff == 1:
-            return "right"
-        elif diff == 3:
-            return "left"
-        else:
-            return "turn_around"
+        if diff == 0: return "forward"
+        elif diff == 1: return "right"
+        elif diff == 3: return "left"
+        else: return "turn_around"
 
     def _update_walls(self, wall_l, wall_f, wall_r):
         x, y, f = self.x, self.y, self.facing
@@ -95,28 +121,23 @@ class DeadEndFillSolver:
     def _has_wall(self, x, y, direction):
         return bool(self.walls[x][y] & [WALL_N, WALL_E, WALL_S, WALL_W][direction])
 
-    def _count_open(self, x, y):
-        count = 0
-        for d in range(4):
-            if not self._has_wall(x, y, d):
-                nx, ny = x + DX[d], y + DY[d]
-                if 0 <= nx < self.w and 0 <= ny < self.h and not self.dead_end[nx][ny]:
-                    count += 1
-        return count
-
     def _dead_end_fill(self):
         changed = True
         while changed:
             changed = False
             for x in range(self.w):
                 for y in range(self.h):
-                    if self.dead_end[x][y]:
-                        continue
-                    if (x, y) in self.goals or (x == 0 and y == 0):
-                        continue
-                    if not self.visited[x][y]:
-                        continue
-                    if self._count_open(x, y) <= 1:
+                    if self.dead_end[x][y]: continue
+                    if (x, y) in self.goals or (x == 0 and y == 0): continue
+                    if not self.visited[x][y]: continue
+                    open_count = 0
+                    for d in range(4):
+                        if not self._has_wall(x, y, d):
+                            nx, ny = x + DX[d], y + DY[d]
+                            if 0 <= nx < self.w and 0 <= ny < self.h:
+                                if not self.dead_end[nx][ny]:
+                                    open_count += 1
+                    if open_count <= 1:
                         self.dead_end[x][y] = True
                         API.setColor(x, y, "a")
                         changed = True
@@ -131,8 +152,7 @@ class DeadEndFillSolver:
             cx, cy = queue.popleft()
             d = self.distance[cx][cy]
             for direction in range(4):
-                if self._has_wall(cx, cy, direction):
-                    continue
+                if self._has_wall(cx, cy, direction): continue
                 nx, ny = cx + DX[direction], cy + DY[direction]
                 if 0 <= nx < self.w and 0 <= ny < self.h:
                     if not self.dead_end[nx][ny] and self.distance[nx][ny] > d + 1:
@@ -142,8 +162,7 @@ class DeadEndFillSolver:
     def _best_direction(self):
         best_dist, best_dir = 255, None
         for d in range(4):
-            if self._has_wall(self.x, self.y, d):
-                continue
+            if self._has_wall(self.x, self.y, d): continue
             nx, ny = self.x + DX[d], self.y + DY[d]
             if 0 <= nx < self.w and 0 <= ny < self.h:
                 if self.distance[nx][ny] < best_dist:
@@ -155,11 +174,7 @@ class DeadEndFillSolver:
         for x in range(self.w):
             for y in range(self.h):
                 d = self.distance[x][y]
-                if d < 255:
-                    API.setText(x, y, str(d))
-                if (x, y) in self.goals:
-                    API.setColor(x, y, "y")
-                elif self.dead_end[x][y]:
-                    API.setColor(x, y, "a")
-                elif self.visited[x][y]:
-                    API.setColor(x, y, "c")
+                if d < 255: API.setText(x, y, str(d))
+                if (x, y) in self.goals: API.setColor(x, y, "y")
+                elif self.dead_end[x][y]: API.setColor(x, y, "a")
+                elif self.visited[x][y]: API.setColor(x, y, "c")
