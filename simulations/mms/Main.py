@@ -6,13 +6,11 @@ def log(string):
     sys.stderr.write("{}\n".format(string))
     sys.stderr.flush()
 
-# ── Directions ──────────────────────────────────────────
 NORTH, EAST, SOUTH, WEST = 0, 1, 2, 3
 DX = [0, 1, 0, -1]
 DY = [1, 0, -1, 0]
 WALL_CHARS = ["n", "e", "s", "w"]
 
-# ── Maze State ──────────────────────────────────────────
 width = 0
 height = 0
 walls = []
@@ -45,7 +43,6 @@ def get_goals():
                 goals.append((gx, gy))
     return goals
 
-# ── Wall Helpers ────────────────────────────────────────
 def set_wall(wx, wy, d):
     bit = [1, 2, 4, 8][d]
     walls[wx][wy] |= bit
@@ -57,21 +54,31 @@ def set_wall(wx, wy, d):
 def has_wall(wx, wy, d):
     return bool(walls[wx][wy] & [1, 2, 4, 8][d])
 
-def scan_and_update_walls():
+def scan_walls():
+    """Scan walls at current position. Returns True if any NEW wall found."""
+    new_walls = False
     front = facing
     left = (facing + 3) % 4
     right = (facing + 1) % 4
+
     if API.wallFront():
+        if not has_wall(x, y, front):
+            new_walls = True
         set_wall(x, y, front)
         API.setWall(x, y, WALL_CHARS[front])
     if API.wallLeft():
+        if not has_wall(x, y, left):
+            new_walls = True
         set_wall(x, y, left)
         API.setWall(x, y, WALL_CHARS[left])
     if API.wallRight():
+        if not has_wall(x, y, right):
+            new_walls = True
         set_wall(x, y, right)
         API.setWall(x, y, WALL_CHARS[right])
 
-# ── Flood Fill ──────────────────────────────────────────
+    return new_walls
+
 def flood_fill(goals):
     global dist
     dist = [[255] * height for _ in range(width)]
@@ -102,7 +109,6 @@ def show_distances(goals, color_visited="C", color_goal="Y"):
             elif visited[vx][vy]:
                 API.setColor(vx, vy, color_visited)
 
-# ── Movement ────────────────────────────────────────────
 def turn_to(target_dir):
     global facing
     diff = (target_dir - facing) % 4
@@ -121,7 +127,8 @@ def move_one():
     x += DX[facing]
     y += DY[facing]
 
-def best_neighbor(goals_for_ff):
+def best_open_neighbor(goals_for_ff):
+    """Find best direction toward goal that has no wall."""
     flood_fill(goals_for_ff)
     best_d = 255
     best_dir = None
@@ -166,11 +173,10 @@ def backtrack_to_unvisited():
                 best_dir = d
     return best_dir
 
-# ── Navigate: move from current position to target ─────
 def navigate_to(targets, phase_name, path_color):
     log("{}: navigating to {}".format(phase_name, targets))
     while True:
-        scan_and_update_walls()
+        scan_walls()
         visited[x][y] = True
 
         if (x, y) in targets:
@@ -180,22 +186,19 @@ def navigate_to(targets, phase_name, path_color):
 
         API.setColor(x, y, path_color)
 
-        # Try toward target
-        d = best_neighbor(targets)
+        d = best_open_neighbor(targets)
         if d is not None:
             show_distances(targets)
             turn_to(d)
             move_one()
             continue
 
-        # Explore unvisited
         d = explore_neighbor()
         if d is not None:
             turn_to(d)
             move_one()
             continue
 
-        # Backtrack
         d = backtrack_to_unvisited()
         if d is not None:
             turn_to(d)
@@ -205,13 +208,18 @@ def navigate_to(targets, phase_name, path_color):
         log("{}: STUCK at ({},{})".format(phase_name, x, y))
         return False
 
-# ── Speed Run: follow shortest known path (no exploration) ─
 def speed_run(targets, phase_name, path_color):
+    """Speed run: follow shortest path, but SCAN WALLS at each cell.
+    If new walls discovered, recompute flood fill."""
     log("{}: speed run to {}".format(phase_name, targets))
+
     flood_fill(targets)
-    show_distances(targets, color_visited=path_color)
+    show_distances(targets, color_visited="c", color_goal="Y")
 
     while True:
+        # Always scan walls — even during speed run!
+        new_walls = scan_walls()
+
         if (x, y) in targets:
             API.setColor(x, y, "G")
             log("{}: REACHED ({},{})!".format(phase_name, x, y))
@@ -219,7 +227,13 @@ def speed_run(targets, phase_name, path_color):
 
         API.setColor(x, y, path_color)
 
-        # Follow shortest path — just pick lowest distance neighbor
+        # If new walls found, recompute path
+        if new_walls:
+            log("{}: new wall at ({},{}), recomputing...".format(phase_name, x, y))
+            flood_fill(targets)
+            show_distances(targets, color_visited="c", color_goal="Y")
+
+        # Pick best neighbor (lowest distance, no wall)
         best_d = 255
         best_dir = None
         for d in range(4):
@@ -232,34 +246,29 @@ def speed_run(targets, phase_name, path_color):
                     best_dir = d
 
         if best_dir is None:
-            log("{}: no path!".format(phase_name))
+            log("{}: no path from ({},{})!".format(phase_name, x, y))
             return False
 
         turn_to(best_dir)
         move_one()
 
 # ════════════════════════════════════════════════════════
-# ALGORITHM: Flood Fill (3-phase)
-#
-#   Phase 1: SEARCH RUN — explore maze, reach goal center
-#   Phase 2: RETURN RUN — go back to start (maps more walls)
-#   Phase 3: SPEED RUN — shortest path from start to goal
-#            using fully-mapped maze
+# FLOOD FILL — 3-Phase
 # ════════════════════════════════════════════════════════
 def run_flood_fill():
     goals = get_goals()
     start = [(0, 0)]
 
-    log("=" * 40)
-    log("FLOOD FILL — 3-Phase Run")
+    log("=" * 50)
+    log("FLOOD FILL - 3-Phase Run")
     log("Goals: {}".format(goals))
-    log("=" * 40)
+    log("=" * 50)
 
     API.setColor(0, 0, "G")
     for gx, gy in goals:
         API.setColor(gx, gy, "Y")
 
-    # ── Phase 1: Search Run (explore → goal) ────────
+    # Phase 1: Search
     log("")
     log(">>> PHASE 1: SEARCH RUN (start -> goal)")
     if not navigate_to(goals, "SEARCH", "C"):
@@ -267,7 +276,7 @@ def run_flood_fill():
         return
     log("Phase 1 complete!")
 
-    # ── Phase 2: Return Run (goal → start) ──────────
+    # Phase 2: Return
     log("")
     log(">>> PHASE 2: RETURN RUN (goal -> start)")
     API.clearAllColor()
@@ -278,31 +287,26 @@ def run_flood_fill():
         return
     log("Phase 2 complete!")
 
-    # ── Phase 3: Speed Run (start → goal, shortest) ─
+    # Phase 3: Speed run
     log("")
-    log(">>> PHASE 3: SPEED RUN (start -> goal, shortest path)")
+    log(">>> PHASE 3: SPEED RUN (shortest path)")
     API.clearAllColor()
     API.clearAllText()
     for gx, gy in goals:
         API.setColor(gx, gy, "Y")
-
-    # Recompute flood fill with fully-known maze
     flood_fill(goals)
     show_distances(goals, color_visited="c", color_goal="Y")
-    optimal_dist = dist[0][0]
-    log("Optimal distance from start to goal: {} cells".format(optimal_dist))
-
-    if not speed_run(goals, "SPEED RUN", "G"):
+    log("Optimal distance: {} cells".format(dist[0][0]))
+    if not speed_run(goals, "SPEED", "G"):
         log("Speed run failed!")
         return
 
     log("")
-    log("=" * 40)
+    log("=" * 50)
     log("ALL 3 PHASES COMPLETE!")
-    log("Search -> Return -> Speed Run DONE")
-    log("=" * 40)
+    log("=" * 50)
 
-# ── Algorithm: Left Wall Follower ──────────────────────
+# ── Left Wall Follower ─────────────────────────────────
 def run_left_wall():
     log("Left Wall Follower")
     API.setColor(0, 0, "G")
@@ -317,7 +321,7 @@ def run_left_wall():
             API.turnRight()
         move_one()
 
-# ── Algorithm: Right Wall Follower ─────────────────────
+# ── Right Wall Follower ────────────────────────────────
 def run_right_wall():
     log("Right Wall Follower")
     API.setColor(0, 0, "G")
@@ -332,11 +336,11 @@ def run_right_wall():
             API.turnLeft()
         move_one()
 
-# ── Algorithm: Dead-End Fill + Flood Fill ──────────────
+# ── Dead-End Fill + Flood Fill — 3-Phase ───────────────
 def run_dead_end_fill():
     goals = get_goals()
     start = [(0, 0)]
-    log("Dead-End Fill — 3-Phase Run")
+    log("Dead-End Fill - 3-Phase Run")
     log("Goals: {}".format(goals))
 
     API.setColor(0, 0, "G")
@@ -372,7 +376,7 @@ def run_dead_end_fill():
     # Phase 1: Search with dead-end pruning
     log(">>> PHASE 1: SEARCH with dead-end fill")
     while True:
-        scan_and_update_walls()
+        scan_walls()
         visited[x][y] = True
 
         if (x, y) in goals:
@@ -382,7 +386,8 @@ def run_dead_end_fill():
 
         API.setColor(x, y, "C")
         dead_end_pass()
-        d = best_neighbor(goals)
+
+        d = best_open_neighbor(goals)
         if d is None:
             d = explore_neighbor()
         if d is None:
@@ -390,11 +395,12 @@ def run_dead_end_fill():
         if d is None:
             log("STUCK")
             return
+
         show_distances(goals)
         turn_to(d)
         move_one()
 
-    # Phase 2: Return to start
+    # Phase 2: Return
     log(">>> PHASE 2: RETURN to start")
     API.clearAllColor()
     for gx, gy in goals:
@@ -406,8 +412,8 @@ def run_dead_end_fill():
     log(">>> PHASE 3: SPEED RUN")
     API.clearAllColor()
     API.clearAllText()
-    dead_end = [[False] * height for _ in range(width)]
-    dead_end_pass()
+    for gx, gy in goals:
+        API.setColor(gx, gy, "Y")
     flood_fill(goals)
     show_distances(goals, color_visited="c")
     log("Optimal distance: {} cells".format(dist[0][0]))
