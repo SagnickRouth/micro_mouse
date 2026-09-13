@@ -16,6 +16,7 @@
 #include "maze.h"
 #include "sensor.h"
 #include "config.h"
+#include <string.h>
 
 static const char* alg_names[ALG_COUNT] = {
     "Flood Fill",
@@ -219,7 +220,7 @@ Direction alg_dead_end_fill_step(
 
     /* The existing maze_flood_fill() does not yet accept a blocked-cell mask.
      * Therefore the dead-end map is retained for future pruning integration,
-     * while the actual route remains guaranteed by the normal flood fill. */
+     * while the actual route remains guaranteed by normal flood fill. */
     maze_flood_fill();
     return maze_best_direction(x, y, facing);
 }
