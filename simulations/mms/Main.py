@@ -499,12 +499,185 @@ def run_dead_end_fill():
     speed_run_optimized(goals, "SPEED")
     log("COMPLETE!")
 
+# ════════════════════════════════════════════════════════
+# A* — Turn-Optimized Pathfinding
+# ════════════════════════════════════════════════════════
+def a_star_turn_penalty(goals, start_x, start_y, start_facing):
+    """A* over (x, y, facing), minimizing move + turn cost.
+
+    This uses the same state and turn costs as the existing Dijkstra
+    implementation, but adds an admissible Manhattan-distance heuristic.
+    """
+    INF = 999999
+    dist_map = [[[INF] * 4 for _ in range(height)] for _ in range(width)]
+    prev_map = [[[None] * 4 for _ in range(height)] for _ in range(width)]
+
+    def heuristic(cx, cy):
+        if not goals:
+            return INF
+        return MOVE_COST * min(
+            abs(cx - gx) + abs(cy - gy) for gx, gy in goals
+        )
+
+    # State: (estimated_total_cost, cost_so_far, x, y, facing)
+    pq = [(heuristic(start_x, start_y), 0, start_x, start_y, start_facing)]
+    dist_map[start_x][start_y][start_facing] = 0
+
+    while pq:
+        f_score, cost, cx, cy, cf = heapq.heappop(pq)
+
+        if cost != dist_map[cx][cy][cf]:
+            continue
+
+        if (cx, cy) in goals:
+            return dist_map, prev_map, (cx, cy, cf)
+
+        for new_dir in range(4):
+            if has_wall(cx, cy, new_dir):
+                continue
+
+            nx, ny = cx + DX[new_dir], cy + DY[new_dir]
+            if not (0 <= nx < width and 0 <= ny < height):
+                continue
+
+            turn_diff = (new_dir - cf) % 4
+            if turn_diff == 0:
+                turn_cost = 0
+            elif turn_diff == 1 or turn_diff == 3:
+                turn_cost = TURN_COST_90
+            else:
+                turn_cost = TURN_COST_180
+
+            new_cost = cost + MOVE_COST + turn_cost
+
+            if new_cost < dist_map[nx][ny][new_dir]:
+                dist_map[nx][ny][new_dir] = new_cost
+                prev_map[nx][ny][new_dir] = (cx, cy, cf)
+                estimate = new_cost + heuristic(nx, ny)
+                heapq.heappush(pq, (estimate, new_cost, nx, ny, new_dir))
+
+    return dist_map, prev_map, None
+
+def speed_run_a_star(targets, phase_name):
+    """Speed run using A* with the same turn penalties as the simulator."""
+    log("{}: computing A* turn-optimized path...".format(phase_name))
+
+    dist_map, prev_map, goal_state = a_star_turn_penalty(targets, x, y, facing)
+
+    if goal_state is None:
+        log("{}: no path to goal!".format(phase_name))
+        return False
+
+    best_gx, best_gy, best_gd = goal_state
+    best_cost = dist_map[best_gx][best_gy][best_gd]
+    log("{}: A* optimal cost = {} (with turn penalties)".format(
+        phase_name, best_cost))
+
+    flood_fill(targets)
+    simple_dist = dist[x][y]
+    log("{}: simple BFS distance = {} cells".format(phase_name, simple_dist))
+
+    path = []
+    cx, cy, cd = best_gx, best_gy, best_gd
+    while (cx, cy) != (x, y) or cd != facing:
+        path.append((cx, cy, cd))
+        prev = prev_map[cx][cy][cd]
+        if prev is None:
+            log("{}: path reconstruction failed".format(phase_name))
+            return False
+        cx, cy, cd = prev
+    path.reverse()
+
+    turns = 0
+    prev_dir = facing
+    for px, py, pd in path:
+        if pd != prev_dir:
+            turns += 1
+        prev_dir = pd
+
+    log("{}: A* path length = {} cells, {} turns".format(
+        phase_name, len(path), turns))
+
+    for px, py, pd in path:
+        API.setColor(px, py, "o")
+    for gx, gy in targets:
+        API.setColor(gx, gy, "Y")
+
+    for px, py, pd in path:
+        new_walls = scan_walls()
+        if new_walls:
+            log("{}: new wall found at ({},{}), replanning...".format(
+                phase_name, x, y))
+            return speed_run_a_star(targets, phase_name)
+
+        API.setColor(x, y, "G")
+        turn_to(pd)
+        move_one()
+
+    scan_walls()
+    if (x, y) in targets:
+        API.setColor(x, y, "G")
+        log("{}: REACHED ({},{})!".format(phase_name, x, y))
+        return True
+
+    log("{}: A* path ended but not at goal".format(phase_name))
+    return False
+
+def run_a_star():
+    goals = get_goals()
+    start = [(0, 0)]
+
+    log("=" * 50)
+    log("A* — 3-Phase with Turn-Optimized Speed Run")
+    log("Goals: {}".format(goals))
+    log("Turn cost 90: {}, 180: {}, Move: {}".format(
+        TURN_COST_90, TURN_COST_180, MOVE_COST))
+    log("=" * 50)
+
+    API.setColor(0, 0, "G")
+    for gx, gy in goals:
+        API.setColor(gx, gy, "Y")
+
+    # Phase 1: Search
+    log("")
+    log(">>> PHASE 1: SEARCH RUN (explore -> goal)")
+    if not navigate_to(goals, "SEARCH", "C"):
+        return
+    log("Phase 1 complete!")
+
+    # Phase 2: Return
+    log("")
+    log(">>> PHASE 2: RETURN RUN (goal -> start)")
+    API.clearAllColor()
+    for gx, gy in goals:
+        API.setColor(gx, gy, "Y")
+    if not navigate_to(start, "RETURN", "B"):
+        return
+    log("Phase 2 complete!")
+
+    # Phase 3: A* speed run
+    log("")
+    log(">>> PHASE 3: SPEED RUN (A* turn-optimized shortest path)")
+    API.clearAllColor()
+    API.clearAllText()
+    for gx, gy in goals:
+        API.setColor(gx, gy, "Y")
+
+    if not speed_run_a_star(goals, "A* SPEED"):
+        return
+
+    log("")
+    log("=" * 50)
+    log("ALL 3 PHASES COMPLETE!")
+    log("=" * 50)
+
 # ── Main ──────────────────────────────────────────────
 ALGORITHMS = {
     "flood_fill": run_flood_fill,
     "left_wall": run_left_wall,
     "right_wall": run_right_wall,
     "dead_end_fill": run_dead_end_fill,
+    "a_star": run_a_star,
 }
 
 def main():
