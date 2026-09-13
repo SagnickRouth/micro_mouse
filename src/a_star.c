@@ -7,24 +7,23 @@
  *   - Four configured goal cells are supported through maze_is_goal().
  *   - Manhattan distance to the nearest goal is the heuristic.
  *   - The heuristic is admissible and consistent for unit-cost cell moves.
- *   - A binary min-heap with decrease-key keeps the planner deterministic
- *     without allocating a large duplicate-entry priority queue.
+ *   - A binary min-heap with decrease-key keeps the planner deterministic.
  *   - Walls are read from maze_walls, so the planner uses the same map as
  *     the existing flood-fill implementation.
  *
  * Unknown cells are intentionally treated as open. During the search run,
  * newly discovered walls are written into maze_walls before A* is called;
- * this makes the result conservative only with respect to known walls, which
- * is the same assumption made by the current flood-fill implementation.
+ * this is the same map assumption made by the current flood-fill code.
  */
 
 #include "a_star.h"
 #include "maze.h"
+#include <stddef.h>
 #include <string.h>
 
 #define ASTAR_NODE_COUNT (MAZE_SIZE * MAZE_SIZE)
 #define ASTAR_INF        0xFFFFu
-#define ASTAR_NONE       0xFFu
+#define ASTAR_NONE       0xFFFFu
 
 static const int8_t dx[4] = { 0, 1, 0, -1 }; /* N, E, S, W */
 static const int8_t dy[4] = { 1, 0, -1, 0 };
@@ -38,7 +37,7 @@ static uint16_t f_score[ASTAR_NODE_COUNT];
 static uint8_t  came_from[ASTAR_NODE_COUNT];
 static uint8_t  came_dir[ASTAR_NODE_COUNT];
 static uint8_t  heap[ASTAR_NODE_COUNT];
-static uint8_t  heap_pos[ASTAR_NODE_COUNT];
+static uint16_t heap_pos[ASTAR_NODE_COUNT];
 static bool     closed[ASTAR_NODE_COUNT];
 static uint16_t heap_size;
 
@@ -51,14 +50,6 @@ static void node_xy(uint8_t node, uint8_t *x, uint8_t *y)
 {
     *x = (uint8_t)(node % MAZE_SIZE);
     *y = (uint8_t)(node / MAZE_SIZE);
-}
-
-static uint8_t popcount4(uint8_t value)
-{
-    value &= 0x0F;
-    value = (uint8_t)(value - ((value >> 1) & 0x55));
-    value = (uint8_t)((value & 0x33) + ((value >> 2) & 0x33));
-    return (uint8_t)((value + (value >> 4)) & 0x0F);
 }
 
 /* Lower f first; on equal f prefer lower g, then lower node index. */
@@ -75,8 +66,8 @@ static void heap_swap(uint16_t a, uint16_t b)
     uint8_t nb = heap[b];
     heap[a] = nb;
     heap[b] = na;
-    heap_pos[na] = (uint8_t)b;
-    heap_pos[nb] = (uint8_t)a;
+    heap_pos[na] = b;
+    heap_pos[nb] = a;
 }
 
 static void heap_sift_up(uint16_t pos)
@@ -119,7 +110,7 @@ static void heap_clear(void)
 
 static bool heap_push_or_decrease(uint8_t node)
 {
-    uint8_t pos = heap_pos[node];
+    uint16_t pos = heap_pos[node];
 
     if (pos != ASTAR_NONE) {
         heap_sift_up(pos);
@@ -130,7 +121,7 @@ static bool heap_push_or_decrease(uint8_t node)
     if (heap_size >= ASTAR_NODE_COUNT) return false;
 
     heap[heap_size] = node;
-    heap_pos[node] = (uint8_t)heap_size;
+    heap_pos[node] = heap_size;
     heap_size++;
     heap_sift_up((uint16_t)(heap_size - 1u));
     return true;
@@ -155,7 +146,7 @@ static uint16_t heuristic(uint8_t x, uint8_t y)
 {
     uint16_t best = ASTAR_INF;
 
-    /* Goal count is at most four, so this is cheap on the STM32. */
+    /* The configured goal set is at most four cells. */
     for (uint8_t gy = 0; gy < MAZE_SIZE; gy++) {
         for (uint8_t gx = 0; gx < MAZE_SIZE; gx++) {
             if (!maze_is_goal(gx, gy)) continue;
@@ -169,7 +160,6 @@ static uint16_t heuristic(uint8_t x, uint8_t y)
         }
     }
 
-    /* No configured goal: make the node unreachable rather than guessing. */
     return best;
 }
 
@@ -185,7 +175,7 @@ static bool passable(uint8_t x, uint8_t y, Direction d,
         return false;
     }
 
-    /* Require the neighbor to agree that the shared edge is open. */
+    /* Require both cells to agree that the shared edge is open. */
     Direction opposite = (Direction)(((uint8_t)d + 2u) & 0x03u);
     if (maze_walls[(uint8_t)tx][(uint8_t)ty] & dir_wall[opposite]) {
         return false;
@@ -218,8 +208,8 @@ void a_star_reset(void)
 {
     memset(g_score, 0xFF, sizeof(g_score));
     memset(f_score, 0xFF, sizeof(f_score));
-    memset(came_from, ASTAR_NONE, sizeof(came_from));
-    memset(came_dir, ASTAR_NONE, sizeof(came_dir));
+    memset(came_from, 0xFF, sizeof(came_from));
+    memset(came_dir, 0xFF, sizeof(came_dir));
     memset(closed, 0, sizeof(closed));
     heap_clear();
 }
@@ -289,9 +279,9 @@ bool a_star_next_direction(uint8_t start_x, uint8_t start_y,
         return false;
     }
 
-    /* Prefer the A* path. Facing is intentionally not part of the graph
-     * cost: A* finds the shortest cell path, while motion.c decides whether
-     * the transition is a straight, 90-degree, or 180-degree maneuver. */
+    /* A* minimizes cell transitions. motion.c remains responsible for
+     * gyro-based turn execution and therefore facing is not part of the
+     * graph cost here. */
     (void)facing;
     *next_direction = path.directions[0];
     return true;
