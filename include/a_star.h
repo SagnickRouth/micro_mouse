@@ -1,11 +1,16 @@
 /**
  * @file    a_star.h
- * @brief   A* path planner for the 16x16 micromouse maze.
+ * @brief   Heading-aware A* planner for the micromouse maze.
  *
- * The planner operates on the same wall representation used by maze.c and
- * supports the current dynamic goal set through maze_is_goal(). It is kept
- * separate from the existing flood-fill selector so it can be tested and
- * integrated without changing the four existing switch modes.
+ * The planner follows the behavior of simulations/mms/Main.py:
+ *   - state includes (x, y, facing)
+ *   - forward motion has a cost
+ *   - 90/180 degree turns have configurable penalties
+ *   - planning is performed against the currently known wall map
+ *   - unknown edges remain open until a sensor discovers a wall
+ *
+ * This is intentionally implemented without dynamic allocation for the
+ * STM32F103 target. Gyro-based motion execution remains in motion.c.
  */
 
 #ifndef A_STAR_H
@@ -19,32 +24,42 @@ extern "C" {
 #include <stdbool.h>
 #include "config.h"
 
-#define A_STAR_MAX_PATH MAZE_SIZE * MAZE_SIZE
+#define A_STAR_MAX_PATH       (MAZE_SIZE * MAZE_SIZE)
+#define A_STAR_MOVE_COST      2u
+#define A_STAR_TURN_COST_90   3u
+#define A_STAR_TURN_COST_180  6u
 
 typedef struct {
     Direction directions[A_STAR_MAX_PATH];
     uint16_t length;
+    uint16_t cost;
 } AStarPath;
 
 /**
- * Find the shortest path from (start_x,start_y) to any configured goal.
+ * Find the minimum-cost path from the start pose to any configured goal.
  *
- * The maze is read from the global wall map maintained by maze.c. Unknown
- * cells are treated as open, matching the existing flood-fill architecture.
- * AStarPath::directions contains one absolute direction per cell transition.
+ * Cost model is deliberately identical to Main.py's optimized speed run:
+ *   straight: +MOVE_COST
+ *   90-degree turn + move: +(TURN_COST_90 + MOVE_COST)
+ *   180-degree turn + move: +(TURN_COST_180 + MOVE_COST)
  *
- * @return true when a path exists, false when no goal is reachable.
+ * The returned directions are absolute N/E/S/W movement directions.
  */
-bool a_star_find_path(uint8_t start_x, uint8_t start_y, AStarPath *path);
+bool a_star_find_path(uint8_t start_x, uint8_t start_y,
+                      Direction facing, AStarPath *path);
 
 /**
- * Calculate only the next absolute direction from the current cell.
- * This is the function intended for the cell-by-cell navigation loop.
+ * Calculate only the first movement direction of the optimal path.
+ * Intended for the normal cell-by-cell navigation loop.
  */
 bool a_star_next_direction(uint8_t start_x, uint8_t start_y,
                            Direction facing, Direction *next_direction);
 
-/** Clear the cached planner state. Safe to call before a new run. */
+/** Update the internal maze map with the current L/F/R sensor readings. */
+void a_star_update_walls(uint8_t x, uint8_t y, Direction facing,
+                         bool wall_l, bool wall_f, bool wall_r);
+
+/** Clear planner working state. */
 void a_star_reset(void);
 
 #ifdef __cplusplus
