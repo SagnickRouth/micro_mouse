@@ -43,7 +43,6 @@ static bool gpio_read_pin(void *port, uint16_t pin)
 
 AlgorithmConfig algorithm_read_switches(void)
 {
-    /* Preserve the existing two-bit mapping for algorithms 0-3. */
     bool sw1 = gpio_read_pin(GPIOA, GPIO_PIN_2);
     bool sw2 = gpio_read_pin(GPIOA, GPIO_PIN_3);
 
@@ -218,9 +217,6 @@ Direction alg_dead_end_fill_step(
     memset(dead_end_filled, 0, sizeof(dead_end_filled));
     dead_end_fill_pass();
 
-    /* The existing maze_flood_fill() does not yet accept a blocked-cell mask.
-     * Therefore the dead-end map is retained for future pruning integration,
-     * while the actual route remains guaranteed by normal flood fill. */
     maze_flood_fill();
     return maze_best_direction(x, y, facing);
 }
@@ -229,13 +225,8 @@ Direction alg_a_star_step(
     uint8_t x, uint8_t y, Direction facing,
     bool wall_l, bool wall_f, bool wall_r)
 {
-    (void)wall_l;
-    (void)wall_f;
-    (void)wall_r;
-
-    /* Keep the same wall-update convention as flood fill before planning. */
-    uint8_t abs_walls = sensor_to_absolute_walls(facing);
-    maze_update_walls(x, y, abs_walls);
+    /* Main.py scans the L/F/R sensors before every planning cycle. */
+    a_star_update_walls(x, y, facing, wall_l, wall_f, wall_r);
     maze_mark_visited(x, y);
 
     Direction next;
@@ -243,7 +234,7 @@ Direction alg_a_star_step(
         return next;
     }
 
-    /* No A* route: retain the current heading rather than commanding an
-     * invalid direction. The caller can treat this as a navigation fault. */
+    /* No route exists in the currently known map. Keep the heading so the
+     * motion layer does not receive an invalid Direction value. */
     return facing;
 }
