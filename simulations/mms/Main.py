@@ -13,26 +13,30 @@ DY = [1, 0, -1, 0]
 WALL_CHARS = ["n", "e", "s", "w"]
 
 # Turn cost penalties (tunable)
-# Higher = more penalty for turning = prefers straighter paths
-TURN_COST_90 = 3       # cost of a 90 degree turn
-TURN_COST_180 = 6      # cost of a 180 degree turn
-MOVE_COST = 2           # cost of moving one cell forward
+TURN_COST_90 = 3
+TURN_COST_180 = 6
+MOVE_COST = 2
 
 width = 0
 height = 0
 walls = []
 dist = []
 visited = []
+# Traversed graph: an edge exists only after the robot has physically
+# traversed that cell-to-cell connection. This is the graph used for the
+# final run; it deliberately does not use untraversed/open-looking cells.
+traversed_edges = []
 x, y = 0, 0
 facing = NORTH
 
 def init_maze():
-    global width, height, walls, dist, visited, x, y, facing
+    global width, height, walls, dist, visited, traversed_edges, x, y, facing
     width = API.mazeWidth()
     height = API.mazeHeight()
     walls = [[0] * height for _ in range(width)]
     dist = [[255] * height for _ in range(width)]
     visited = [[False] * height for _ in range(width)]
+    traversed_edges = [[0] * height for _ in range(width)]
     x, y, facing = 0, 0, NORTH
     for i in range(width):
         walls[i][0] |= 4
@@ -60,6 +64,29 @@ def set_wall(wx, wy, d):
 
 def has_wall(wx, wy, d):
     return bool(walls[wx][wy] & [1, 2, 4, 8][d])
+
+def record_traversal(wx, wy, d):
+    """Record a cell-to-cell edge only when the robot traverses it."""
+    nx, ny = wx + DX[d], wy + DY[d]
+    if not (0 <= wx < width and 0 <= wy < height):
+        return
+    if not (0 <= nx < width and 0 <= ny < height):
+        return
+    traversed_edges[wx][wy] |= (1 << d)
+    opposite = (d + 2) % 4
+    traversed_edges[nx][ny] |= (1 << opposite)
+
+def has_traversed(wx, wy, d):
+    if not (0 <= wx < width and 0 <= wy < height):
+        return False
+    return bool(traversed_edges[wx][wy] & (1 << d))
+
+def count_traversed_edges():
+    total = 0
+    for tx in range(width):
+        for ty in range(height):
+            total += sum(1 for d in range(4) if has_traversed(tx, ty, d))
+    return total // 2
 
 def scan_walls():
     new_walls = False
@@ -103,73 +130,43 @@ def flood_fill(goals):
                     dist[nx][ny] = d + 1
                     queue.append((nx, ny))
 
-# ── Turn-Penalized Dijkstra (for speed run) ─────────────
-# State: (x, y, facing_direction)
-# This finds the path that minimizes total time considering
-# that turns are expensive (robot must stop, rotate, restart)
-
+# ── Turn-Penalized Dijkstra over the known maze ─────────
 def dijkstra_turn_penalty(goals, start_x, start_y, start_facing):
-    """Returns a direction-aware distance map and predecessor map.
-    dist_map[x][y][d] = minimum cost to reach (x,y) facing direction d.
-    prev_map[x][y][d] = (px, py, pd) = where we came from."""
-
+    """Legacy full-known-map planner used only for compatibility."""
     INF = 999999
     dist_map = [[[INF]*4 for _ in range(height)] for _ in range(width)]
     prev_map = [[[None]*4 for _ in range(height)] for _ in range(width)]
-
-    # Start: we're at (start_x, start_y) facing start_facing, cost 0
     dist_map[start_x][start_y][start_facing] = 0
-
-    # Priority queue: (cost, x, y, facing)
     pq = [(0, start_x, start_y, start_facing)]
 
     while pq:
         cost, cx, cy, cf = heapq.heappop(pq)
-
         if cost > dist_map[cx][cy][cf]:
             continue
-
-        # Check if we reached a goal
         if (cx, cy) in goals:
-            continue  # still explore to find optimal for all goals
-
-        # Try moving in each direction
+            continue
         for new_dir in range(4):
             if has_wall(cx, cy, new_dir):
                 continue
-
             nx, ny = cx + DX[new_dir], cy + DY[new_dir]
             if not (0 <= nx < width and 0 <= ny < height):
                 continue
-
-            # Calculate turn cost
             turn_diff = (new_dir - cf) % 4
             if turn_diff == 0:
-                turn_cost = 0               # straight ahead
+                turn_cost = 0
             elif turn_diff == 1 or turn_diff == 3:
-                turn_cost = TURN_COST_90    # 90 degree turn
+                turn_cost = TURN_COST_90
             else:
-                turn_cost = TURN_COST_180   # 180 degree turn
-
+                turn_cost = TURN_COST_180
             new_cost = cost + MOVE_COST + turn_cost
-
             if new_cost < dist_map[nx][ny][new_dir]:
                 dist_map[nx][ny][new_dir] = new_cost
                 prev_map[nx][ny][new_dir] = (cx, cy, cf)
                 heapq.heappush(pq, (new_cost, nx, ny, new_dir))
-
     return dist_map, prev_map
 
 def reconstruct_path(prev_map, goals, start_x, start_y):
-    """Find the goal cell+direction with lowest cost, trace back path."""
-    # Find best goal entry
-    INF = 999999
-    best_cost = INF
-    best_gx, best_gy, best_gd = -1, -1, -1
-
-    # We need dist_map too, let's get it from the caller
-    # Actually, just trace all goals
-    return None  # handled inline below
+    return None
 
 def show_distances_simple(goals, color_visited="C", color_goal="Y"):
     for vx in range(width):
@@ -196,6 +193,8 @@ def turn_to(target_dir):
 
 def move_one():
     global x, y
+    old_x, old_y = x, y
+    record_traversal(old_x, old_y, facing)
     API.moveForward()
     x += DX[facing]
     y += DY[facing]
@@ -274,47 +273,79 @@ def navigate_to(targets, phase_name, path_color):
         log("{}: STUCK".format(phase_name))
         return False
 
-# ── Speed Run with Turn-Penalized Pathfinding ──────────
-def speed_run_optimized(targets, phase_name):
-    """Speed run using Dijkstra with turn penalties.
-    Finds path that minimizes actual traversal time."""
-    log("{}: computing turn-optimized path...".format(phase_name))
+# ── Final path planner: traversed graph only ─────────────
+def traversed_dijkstra_turn_penalty(goals, start_x, start_y, start_facing):
+    """Plan only on edges the robot has actually traversed.
 
-    dist_map, prev_map = dijkstra_turn_penalty(targets, x, y, facing)
-
-    # Find best goal entry (lowest cost across all facing directions)
+    This intentionally ignores every untraversed/open-looking maze edge.
+    All branches and loops accumulated during search and return are retained,
+    so the final route may use any useful extra path that was explored.
+    """
     INF = 999999
-    best_cost = INF
-    best_gx, best_gy, best_gd = -1, -1, -1
-    for gx, gy in targets:
-        for gd in range(4):
-            if dist_map[gx][gy][gd] < best_cost:
-                best_cost = dist_map[gx][gy][gd]
-                best_gx, best_gy, best_gd = gx, gy, gd
+    dist_map = [[[INF] * 4 for _ in range(height)] for _ in range(width)]
+    prev_map = [[[None] * 4 for _ in range(height)] for _ in range(width)]
+    dist_map[start_x][start_y][start_facing] = 0
+    pq = [(0, start_x, start_y, start_facing)]
 
-    if best_cost >= INF:
-        log("{}: no path to goal!".format(phase_name))
+    while pq:
+        cost, cx, cy, cf = heapq.heappop(pq)
+        if cost != dist_map[cx][cy][cf]:
+            continue
+        if (cx, cy) in goals:
+            return dist_map, prev_map, (cx, cy, cf)
+
+        for new_dir in range(4):
+            if not has_traversed(cx, cy, new_dir):
+                continue
+            nx, ny = cx + DX[new_dir], cy + DY[new_dir]
+            if not (0 <= nx < width and 0 <= ny < height):
+                continue
+
+            turn_diff = (new_dir - cf) % 4
+            if turn_diff == 0:
+                turn_cost = 0
+            elif turn_diff == 1 or turn_diff == 3:
+                turn_cost = TURN_COST_90
+            else:
+                turn_cost = TURN_COST_180
+
+            new_cost = cost + MOVE_COST + turn_cost
+            if new_cost < dist_map[nx][ny][new_dir]:
+                dist_map[nx][ny][new_dir] = new_cost
+                prev_map[nx][ny][new_dir] = (cx, cy, cf)
+                heapq.heappush(pq, (new_cost, nx, ny, new_dir))
+
+    return dist_map, prev_map, None
+
+def speed_run_optimized(targets, phase_name):
+    """Final run using only the graph of physically traversed edges."""
+    log("{}: computing final path from TRAVERSED PATHS only...".format(phase_name))
+    log("{}: traversed edges available = {}".format(
+        phase_name, count_traversed_edges()))
+
+    dist_map, prev_map, goal_state = traversed_dijkstra_turn_penalty(
+        targets, x, y, facing)
+
+    if goal_state is None:
+        log("{}: no path to goal exists using only traversed paths!".format(
+            phase_name))
         return False
 
-    log("{}: optimal cost = {} (with turn penalties)".format(phase_name, best_cost))
+    best_gx, best_gy, best_gd = goal_state
+    best_cost = dist_map[best_gx][best_gy][best_gd]
+    log("{}: final traversed-path cost = {}".format(phase_name, best_cost))
 
-    # Also compute simple BFS distance for comparison
-    flood_fill(targets)
-    simple_dist = dist[x][y]
-    log("{}: simple BFS distance = {} cells".format(phase_name, simple_dist))
-
-    # Reconstruct path
     path = []
     cx, cy, cd = best_gx, best_gy, best_gd
     while (cx, cy) != (x, y) or cd != facing:
         path.append((cx, cy, cd))
         prev = prev_map[cx][cy][cd]
         if prev is None:
-            break
+            log("{}: path reconstruction failed".format(phase_name))
+            return False
         cx, cy, cd = prev
     path.reverse()
 
-    # Count turns in path
     turns = 0
     prev_dir = facing
     for px, py, pd in path:
@@ -322,46 +353,49 @@ def speed_run_optimized(targets, phase_name):
             turns += 1
         prev_dir = pd
 
-    log("{}: path length = {} cells, {} turns".format(phase_name, len(path), turns))
+    log("{}: FINAL PATH = {} cells, {} turns".format(
+        phase_name, len(path), turns))
 
-    # Visualize the planned path
     for px, py, pd in path:
-        API.setColor(px, py, "o")  # orange = planned path
+        API.setColor(px, py, "o")
     for gx, gy in targets:
         API.setColor(gx, gy, "Y")
 
-    # Execute the path
     for px, py, pd in path:
-        # Scan walls first (safety)
-        new_walls = scan_walls()
-        if new_walls:
-            log("{}: new wall found at ({},{}), replanning...".format(phase_name, x, y))
-            # Replan from current position
-            return speed_run_optimized(targets, phase_name)
+        # Safety check: never switch to an untraversed edge during the final run.
+        if not has_traversed(x, y, pd):
+            log("{}: ERROR — final path requested an untraversed edge at ({},{})".format(
+                phase_name, x, y))
+            return False
+
+        scan_walls()
+        if has_wall(x, y, pd):
+            log("{}: ERROR — final traversed path is blocked at ({},{})".format(
+                phase_name, x, y))
+            return False
 
         API.setColor(x, y, "G")
         turn_to(pd)
         move_one()
 
-    # Check if we reached goal
     scan_walls()
     if (x, y) in targets:
         API.setColor(x, y, "G")
         log("{}: REACHED ({},{})!".format(phase_name, x, y))
         return True
 
-    log("{}: path ended but not at goal".format(phase_name))
+    log("{}: final path ended but not at goal".format(phase_name))
     return False
 
 # ════════════════════════════════════════════════════════
-# FLOOD FILL — 3-Phase with Turn-Optimized Speed Run
+# FLOOD FILL — 3-Phase with Traversed-Path Final Run
 # ════════════════════════════════════════════════════════
 def run_flood_fill():
     goals = get_goals()
     start = [(0, 0)]
 
     log("=" * 50)
-    log("FLOOD FILL - 3-Phase (Turn-Optimized Speed Run)")
+    log("FLOOD FILL - 3-Phase (Traversed-Path Final Run)")
     log("Goals: {}".format(goals))
     log("Turn cost 90: {}, 180: {}, Move: {}".format(
         TURN_COST_90, TURN_COST_180, MOVE_COST))
@@ -371,14 +405,12 @@ def run_flood_fill():
     for gx, gy in goals:
         API.setColor(gx, gy, "Y")
 
-    # Phase 1: Search
     log("")
     log(">>> PHASE 1: SEARCH RUN (explore -> goal)")
     if not navigate_to(goals, "SEARCH", "C"):
         return
     log("Phase 1 complete!")
 
-    # Phase 2: Return
     log("")
     log(">>> PHASE 2: RETURN RUN (goal -> start)")
     API.clearAllColor()
@@ -388,9 +420,8 @@ def run_flood_fill():
         return
     log("Phase 2 complete!")
 
-    # Phase 3: Speed run with turn-penalized Dijkstra
     log("")
-    log(">>> PHASE 3: SPEED RUN (turn-optimized shortest path)")
+    log(">>> PHASE 3: FINAL RUN (traversed paths only)")
     API.clearAllColor()
     API.clearAllText()
     for gx, gy in goals:
@@ -404,7 +435,7 @@ def run_flood_fill():
     log("ALL 3 PHASES COMPLETE!")
     log("=" * 50)
 
-# ── Wall Followers (unchanged) ─────────────────────────
+# ── Wall Followers ──────────────────────────────────────
 def run_left_wall():
     log("Left Wall Follower")
     API.setColor(0, 0, "G")
@@ -413,10 +444,17 @@ def run_left_wall():
         step += 1
         API.setText(x, y, str(step))
         API.setColor(x, y, "C")
+        if (x, y) in get_goals():
+            API.setColor(x, y, "G")
+            log("Left Wall: REACHED GOAL!")
+            return
+        scan_walls()
         if not API.wallLeft():
             API.turnLeft()
+            facing = (facing + 3) % 4
         while API.wallFront():
             API.turnRight()
+            facing = (facing + 1) % 4
         move_one()
 
 def run_right_wall():
@@ -427,17 +465,24 @@ def run_right_wall():
         step += 1
         API.setText(x, y, str(step))
         API.setColor(x, y, "M")
+        if (x, y) in get_goals():
+            API.setColor(x, y, "G")
+            log("Right Wall: REACHED GOAL!")
+            return
+        scan_walls()
         if not API.wallRight():
             API.turnRight()
+            facing = (facing + 1) % 4
         while API.wallFront():
             API.turnLeft()
+            facing = (facing + 3) % 4
         move_one()
 
-# ── Dead-End Fill — 3-Phase (also turn-optimized) ──────
+# ── Dead-End Fill — 3-Phase ──────────────────────────────
 def run_dead_end_fill():
     goals = get_goals()
     start = [(0, 0)]
-    log("Dead-End Fill - 3-Phase (Turn-Optimized)")
+    log("Dead-End Fill - 3-Phase (Traversed-Path Final Run)")
 
     API.setColor(0, 0, "G")
     for gx, gy in goals:
@@ -465,7 +510,6 @@ def run_dead_end_fill():
                         API.setColor(dx, dy, "a")
                         changed = True
 
-    # Phase 1
     log(">>> PHASE 1: SEARCH with dead-end fill")
     while True:
         scan_walls()
@@ -480,18 +524,18 @@ def run_dead_end_fill():
         if d is None: d = explore_neighbor()
         if d is None: d = backtrack_to_unvisited()
         if d is None:
-            log("STUCK"); return
+            log("STUCK")
+            return
         show_distances_simple(goals)
         turn_to(d)
         move_one()
 
-    # Phase 2
     log(">>> PHASE 2: RETURN")
     API.clearAllColor()
-    if not navigate_to(start, "RETURN", "B"): return
+    if not navigate_to(start, "RETURN", "B"):
+        return
 
-    # Phase 3: Turn-optimized speed run
-    log(">>> PHASE 3: SPEED RUN (turn-optimized)")
+    log(">>> PHASE 3: FINAL RUN (traversed paths only)")
     API.clearAllColor()
     API.clearAllText()
     for gx, gy in goals:
@@ -500,14 +544,10 @@ def run_dead_end_fill():
     log("COMPLETE!")
 
 # ════════════════════════════════════════════════════════
-# A* — Turn-Optimized Pathfinding
+# A* — Traversed-Path Final Planning
 # ════════════════════════════════════════════════════════
 def a_star_turn_penalty(goals, start_x, start_y, start_facing):
-    """A* over (x, y, facing), minimizing move + turn cost.
-
-    This uses the same state and turn costs as the existing Dijkstra
-    implementation, but adds an admissible Manhattan-distance heuristic.
-    """
+    """A* over the TRAVERSED graph only, minimizing move + turn cost."""
     INF = 999999
     dist_map = [[[INF] * 4 for _ in range(height)] for _ in range(width)]
     prev_map = [[[None] * 4 for _ in range(height)] for _ in range(width)]
@@ -515,27 +555,21 @@ def a_star_turn_penalty(goals, start_x, start_y, start_facing):
     def heuristic(cx, cy):
         if not goals:
             return INF
-        return MOVE_COST * min(
-            abs(cx - gx) + abs(cy - gy) for gx, gy in goals
-        )
+        return MOVE_COST * min(abs(cx - gx) + abs(cy - gy) for gx, gy in goals)
 
-    # State: (estimated_total_cost, cost_so_far, x, y, facing)
     pq = [(heuristic(start_x, start_y), 0, start_x, start_y, start_facing)]
     dist_map[start_x][start_y][start_facing] = 0
 
     while pq:
-        f_score, cost, cx, cy, cf = heapq.heappop(pq)
-
+        estimate, cost, cx, cy, cf = heapq.heappop(pq)
         if cost != dist_map[cx][cy][cf]:
             continue
-
         if (cx, cy) in goals:
             return dist_map, prev_map, (cx, cy, cf)
 
         for new_dir in range(4):
-            if has_wall(cx, cy, new_dir):
+            if not has_traversed(cx, cy, new_dir):
                 continue
-
             nx, ny = cx + DX[new_dir], cy + DY[new_dir]
             if not (0 <= nx < width and 0 <= ny < height):
                 continue
@@ -549,33 +583,33 @@ def a_star_turn_penalty(goals, start_x, start_y, start_facing):
                 turn_cost = TURN_COST_180
 
             new_cost = cost + MOVE_COST + turn_cost
-
             if new_cost < dist_map[nx][ny][new_dir]:
                 dist_map[nx][ny][new_dir] = new_cost
                 prev_map[nx][ny][new_dir] = (cx, cy, cf)
-                estimate = new_cost + heuristic(nx, ny)
-                heapq.heappush(pq, (estimate, new_cost, nx, ny, new_dir))
+                heapq.heappush(pq, (
+                    new_cost + heuristic(nx, ny),
+                    new_cost, nx, ny, new_dir))
 
     return dist_map, prev_map, None
 
 def speed_run_a_star(targets, phase_name):
-    """Speed run using A* with the same turn penalties as the simulator."""
-    log("{}: computing A* turn-optimized path...".format(phase_name))
+    """Final A* run using only physically traversed edges."""
+    log("{}: computing A* FINAL PATH from TRAVERSED PATHS only...".format(
+        phase_name))
+    log("{}: traversed edges available = {}".format(
+        phase_name, count_traversed_edges()))
 
-    dist_map, prev_map, goal_state = a_star_turn_penalty(targets, x, y, facing)
+    dist_map, prev_map, goal_state = a_star_turn_penalty(
+        targets, x, y, facing)
 
     if goal_state is None:
-        log("{}: no path to goal!".format(phase_name))
+        log("{}: no traversed-only path to goal!".format(phase_name))
         return False
 
     best_gx, best_gy, best_gd = goal_state
     best_cost = dist_map[best_gx][best_gy][best_gd]
-    log("{}: A* optimal cost = {} (with turn penalties)".format(
+    log("{}: A* final traversed-path cost = {}".format(
         phase_name, best_cost))
-
-    flood_fill(targets)
-    simple_dist = dist[x][y]
-    log("{}: simple BFS distance = {} cells".format(phase_name, simple_dist))
 
     path = []
     cx, cy, cd = best_gx, best_gy, best_gd
@@ -595,7 +629,7 @@ def speed_run_a_star(targets, phase_name):
             turns += 1
         prev_dir = pd
 
-    log("{}: A* path length = {} cells, {} turns".format(
+    log("{}: A* FINAL PATH = {} cells, {} turns".format(
         phase_name, len(path), turns))
 
     for px, py, pd in path:
@@ -604,12 +638,14 @@ def speed_run_a_star(targets, phase_name):
         API.setColor(gx, gy, "Y")
 
     for px, py, pd in path:
-        new_walls = scan_walls()
-        if new_walls:
-            log("{}: new wall found at ({},{}), replanning...".format(
-                phase_name, x, y))
-            return speed_run_a_star(targets, phase_name)
-
+        if not has_traversed(x, y, pd):
+            log("{}: ERROR — A* selected an untraversed edge".format(phase_name))
+            return False
+        scan_walls()
+        if has_wall(x, y, pd):
+            log("{}: ERROR — selected traversed edge is now blocked".format(
+                phase_name))
+            return False
         API.setColor(x, y, "G")
         turn_to(pd)
         move_one()
@@ -620,7 +656,7 @@ def speed_run_a_star(targets, phase_name):
         log("{}: REACHED ({},{})!".format(phase_name, x, y))
         return True
 
-    log("{}: A* path ended but not at goal".format(phase_name))
+    log("{}: A* final path ended but not at goal".format(phase_name))
     return False
 
 def run_a_star():
@@ -628,7 +664,7 @@ def run_a_star():
     start = [(0, 0)]
 
     log("=" * 50)
-    log("A* — 3-Phase with Turn-Optimized Speed Run")
+    log("A* — 3-Phase with Traversed-Path Final Run")
     log("Goals: {}".format(goals))
     log("Turn cost 90: {}, 180: {}, Move: {}".format(
         TURN_COST_90, TURN_COST_180, MOVE_COST))
@@ -638,14 +674,12 @@ def run_a_star():
     for gx, gy in goals:
         API.setColor(gx, gy, "Y")
 
-    # Phase 1: Search
     log("")
     log(">>> PHASE 1: SEARCH RUN (explore -> goal)")
     if not navigate_to(goals, "SEARCH", "C"):
         return
     log("Phase 1 complete!")
 
-    # Phase 2: Return
     log("")
     log(">>> PHASE 2: RETURN RUN (goal -> start)")
     API.clearAllColor()
@@ -655,9 +689,8 @@ def run_a_star():
         return
     log("Phase 2 complete!")
 
-    # Phase 3: A* speed run
     log("")
-    log(">>> PHASE 3: SPEED RUN (A* turn-optimized shortest path)")
+    log(">>> PHASE 3: FINAL RUN (A* over traversed paths only)")
     API.clearAllColor()
     API.clearAllText()
     for gx, gy in goals:
