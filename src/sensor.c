@@ -1,136 +1,121 @@
-/**
- * @file    sensor.c
- * @brief   Digital IR wall sensor driver — GPIO reads with debounce.
- * @author  Sagnick Routh
- * @date    2026-09-06
- *
- * Reads 5 digital IR obstacle avoidance modules (FC-51 type).
- * Each module outputs HIGH or LOW based on its onboard comparator.
- * Calibration is done physically via each module's potentiometer.
- *
- * No ADC, no ambient compensation, no analog thresholds — all handled
- * on-board by the modules.
- */
-
 #include "sensor.h"
-#include "config.h"
+#include "stm32f4xx_hal.h"
+#include "vl53l0x_api.h"
+#include <string.h>
 
-/* ── Global Sensor Data ─────────────────────────────────── */
+/*
+ * This file is the STM32 integration layer for ST's VL53L0X API.
+ * Add the official VL53L0X API sources (core + platform) to the CubeIDE
+ * project. The platform layer must implement I2C/delay using hi2c1.
+ */
+extern I2C_HandleTypeDef hi2c1;
+
 SensorData sensor_data;
 
-/* ── GPIO Stubs (replace with real HAL) ─────────────────── */
-
-static void gpio_init_input(void *port, uint16_t pin) {
-    /* TODO: Configure pin as GPIO input with pull-up
-     * Example (HAL):
-     *   GPIO_InitTypeDef gpio = {0};
-     *   gpio.Pin = pin;
-     *   gpio.Mode = GPIO_MODE_INPUT;
-     *   gpio.Pull = GPIO_PULLUP;
-     *   HAL_GPIO_Init(port, &gpio);
-     */
-    (void)port; (void)pin;
-}
-
-static bool gpio_read(void *port, uint16_t pin) {
-    /* TODO: Replace with real HAL read
-     * return HAL_GPIO_ReadPin(port, pin) == GPIO_PIN_SET;
-     */
-    (void)port; (void)pin;
-    return false;
-}
-
-/* ── Sensor Pin Table ───────────────────────────────────── */
-typedef struct {
-    void    *port;
+static const struct {
+    GPIO_TypeDef *port;
     uint16_t pin;
-} SensorPin;
-
-static const SensorPin sensor_pins[SENSOR_COUNT] = {
-    { (void*)IR_LEFT_PORT,         IR_LEFT_PIN         },  /* SENSOR_LEFT */
-    { (void*)IR_FRONT_LEFT_PORT,   IR_FRONT_LEFT_PIN   },  /* SENSOR_FRONT_LEFT */
-    { (void*)IR_FRONT_CENTER_PORT, IR_FRONT_CENTER_PIN },  /* SENSOR_FRONT_CENTER */
-    { (void*)IR_FRONT_RIGHT_PORT,  IR_FRONT_RIGHT_PIN  },  /* SENSOR_FRONT_RIGHT */
-    { (void*)IR_RIGHT_PORT,        IR_RIGHT_PIN        },  /* SENSOR_RIGHT */
+    uint8_t address;
+} sensor_hw[SENSOR_COUNT] = {
+    {VL53_LEFT_XSHUT_PORT,  VL53_LEFT_XSHUT_PIN,  VL53_ADDR_LEFT},
+    {VL53_FL_XSHUT_PORT,    VL53_FL_XSHUT_PIN,    VL53_ADDR_FL},
+    {VL53_FR_XSHUT_PORT,    VL53_FR_XSHUT_PIN,    VL53_ADDR_FR},
+    {VL53_RIGHT_XSHUT_PORT, VL53_RIGHT_XSHUT_PIN, VL53_ADDR_RIGHT}
 };
 
-/* ── Initialization ─────────────────────────────────────── */
-void sensor_init(void) {
-    for (int i = 0; i < SENSOR_COUNT; i++) {
-        gpio_init_input(sensor_pins[i].port, sensor_pins[i].pin);
-        sensor_data.wall[i] = false;
-    }
-    sensor_data.wall_left  = false;
-    sensor_data.wall_right = false;
-    sensor_data.wall_front = false;
+static VL53L0X_Dev_t dev[SENSOR_COUNT];
+static bool ready[SENSOR_COUNT];
+
+static void xshut_all(bool on)
+{
+    for (int i=0;i<SENSOR_COUNT;i++)
+        HAL_GPIO_WritePin(sensor_hw[i].port,sensor_hw[i].pin,on?GPIO_PIN_SET:GPIO_PIN_RESET);
 }
 
-/* ── Read Single Sensor with Debounce ───────────────────── */
-static bool sensor_read_single(SensorPosition pos) {
-    uint8_t count = 0;
-    for (int i = 0; i < IR_DEBOUNCE_SAMPLES; i++) {
-        bool raw = gpio_read(sensor_pins[pos].port, sensor_pins[pos].pin);
-        #if IR_ACTIVE_LOW
-            if (!raw) count++;   /* LOW = wall detected */
-        #else
-            if (raw)  count++;   /* HIGH = wall detected */
-        #endif
-    }
-    /* Majority vote */
-    return (count > (IR_DEBOUNCE_SAMPLES / 2));
+static void xshut_init(void)
+{
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    GPIO_InitTypeDef g={0};
+    g.Mode=GPIO_MODE_OUTPUT_PP; g.Pull=GPIO_NOPULL; g.Speed=GPIO_SPEED_FREQ_LOW;
+    g.Pin=VL53_LEFT_XSHUT_PIN|VL53_FL_XSHUT_PIN|VL53_FR_XSHUT_PIN|VL53_RIGHT_XSHUT_PIN;
+    HAL_GPIO_Init(GPIOA,&g);
+    xshut_all(false);
 }
 
-/* ── Read All Sensors ───────────────────────────────────── */
-void sensor_read_all(void) {
-    for (int i = 0; i < SENSOR_COUNT; i++) {
-        sensor_data.wall[i] = sensor_read_single((SensorPosition)i);
+bool sensor_assign_addresses(void)
+{
+    memset(ready,0,sizeof(ready));
+    xshut_all(false);
+    HAL_Delay(5);
+
+    for (int i=0;i<SENSOR_COUNT;i++) {
+        HAL_GPIO_WritePin(sensor_hw[i].port,sensor_hw[i].pin,GPIO_PIN_SET);
+        HAL_Delay(3);
+
+        memset(&dev[i],0,sizeof(dev[i]));
+        dev[i].I2cDevAddr = VL53_DEFAULT_ADDR;
+
+        if (VL53L0X_DataInit(&dev[i]) != VL53L0X_ERROR_NONE) return false;
+        if (VL53L0X_SetDeviceAddress(&dev[i], sensor_hw[i].address) != VL53L0X_ERROR_NONE) return false;
+        dev[i].I2cDevAddr = sensor_hw[i].address;
+        ready[i]=true;
     }
-
-    /* Convenience flags */
-    sensor_data.wall_left  = sensor_data.wall[SENSOR_LEFT];
-    sensor_data.wall_right = sensor_data.wall[SENSOR_RIGHT];
-
-    /* Front wall = any front sensor triggered */
-    sensor_data.wall_front = sensor_data.wall[SENSOR_FRONT_LEFT]  ||
-                             sensor_data.wall[SENSOR_FRONT_CENTER] ||
-                             sensor_data.wall[SENSOR_FRONT_RIGHT];
+    return true;
 }
 
-/* ── Convenience Getters ────────────────────────────────── */
-const SensorData* sensor_get_data(void) {
-    return &sensor_data;
+bool sensor_init(void)
+{
+    xshut_init();
+    if (!sensor_assign_addresses()) return false;
+
+    for (int i=0;i<SENSOR_COUNT;i++) {
+        if (!ready[i]) return false;
+        if (VL53L0X_StaticInit(&dev[i]) != VL53L0X_ERROR_NONE) return false;
+        if (VL53L0X_PerformRefCalibration(&dev[i], 0, 0) != VL53L0X_ERROR_NONE) return false;
+        if (VL53L0X_SetDeviceMode(&dev[i], VL53L0X_DEVICEMODE_CONTINUOUS_RANGING) != VL53L0X_ERROR_NONE) return false;
+        if (VL53L0X_StartMeasurement(&dev[i]) != VL53L0X_ERROR_NONE) return false;
+    }
+    memset(&sensor_data,0,sizeof(sensor_data));
+    return true;
 }
 
-bool sensor_front_wall(void) { return sensor_data.wall_front; }
-bool sensor_left_wall(void)  { return sensor_data.wall_left;  }
-bool sensor_right_wall(void) { return sensor_data.wall_right; }
-
-/* ── Convert Relative Walls to Absolute ─────────────────── */
-uint8_t sensor_to_absolute_walls(Direction facing) {
-    uint8_t walls = 0;
-
-    /* Map relative L/F/R to absolute N/E/S/W based on heading */
-    switch (facing) {
-        case DIR_NORTH:
-            if (sensor_data.wall_front) walls |= WALL_NORTH;
-            if (sensor_data.wall_left)  walls |= WALL_WEST;
-            if (sensor_data.wall_right) walls |= WALL_EAST;
-            break;
-        case DIR_EAST:
-            if (sensor_data.wall_front) walls |= WALL_EAST;
-            if (sensor_data.wall_left)  walls |= WALL_NORTH;
-            if (sensor_data.wall_right) walls |= WALL_SOUTH;
-            break;
-        case DIR_SOUTH:
-            if (sensor_data.wall_front) walls |= WALL_SOUTH;
-            if (sensor_data.wall_left)  walls |= WALL_EAST;
-            if (sensor_data.wall_right) walls |= WALL_WEST;
-            break;
-        case DIR_WEST:
-            if (sensor_data.wall_front) walls |= WALL_WEST;
-            if (sensor_data.wall_left)  walls |= WALL_SOUTH;
-            if (sensor_data.wall_right) walls |= WALL_NORTH;
-            break;
+bool sensor_read_all(void)
+{
+    bool ok=true;
+    for (int i=0;i<SENSOR_COUNT;i++) {
+        if (!ready[i]) { ok=false; continue; }
+        VL53L0X_RangingMeasurementData_t m;
+        if (VL53L0X_GetRangingMeasurementData(&dev[i],&m) != VL53L0X_ERROR_NONE) { ok=false; continue; }
+        sensor_data.distance_mm[i]=m.RangeMilliMeter;
+        (void)VL53L0X_ClearInterruptMask(&dev[i],0x01);
     }
-    return walls;
+    sensor_data.wall_left = sensor_data.distance_mm[SENSOR_LEFT] <= VL53_WALL_THRESHOLD_MM;
+    sensor_data.wall_front_left = sensor_data.distance_mm[SENSOR_FRONT_LEFT] <= VL53_FRONT_THRESHOLD_MM;
+    sensor_data.wall_front_right = sensor_data.distance_mm[SENSOR_FRONT_RIGHT] <= VL53_FRONT_THRESHOLD_MM;
+    sensor_data.wall_right = sensor_data.distance_mm[SENSOR_RIGHT] <= VL53_WALL_THRESHOLD_MM;
+    sensor_data.wall_front = sensor_data.wall_front_left || sensor_data.wall_front_right;
+    return ok;
+}
+
+const SensorData *sensor_get_data(void){return &sensor_data;}
+bool sensor_front_wall(void){return sensor_data.wall_front;}
+bool sensor_left_wall(void){return sensor_data.wall_left;}
+bool sensor_right_wall(void){return sensor_data.wall_right;}
+
+uint8_t sensor_to_absolute_walls(Direction facing)
+{
+    uint8_t w=0;
+    if (sensor_data.wall_front) {
+        if(facing==DIR_NORTH)w|=WALL_NORTH; else if(facing==DIR_EAST)w|=WALL_EAST;
+        else if(facing==DIR_SOUTH)w|=WALL_SOUTH; else w|=WALL_WEST;
+    }
+    if (sensor_data.wall_left) {
+        if(facing==DIR_NORTH)w|=WALL_WEST; else if(facing==DIR_EAST)w|=WALL_NORTH;
+        else if(facing==DIR_SOUTH)w|=WALL_EAST; else w|=WALL_SOUTH;
+    }
+    if (sensor_data.wall_right) {
+        if(facing==DIR_NORTH)w|=WALL_EAST; else if(facing==DIR_EAST)w|=WALL_SOUTH;
+        else if(facing==DIR_SOUTH)w|=WALL_WEST; else w|=WALL_NORTH;
+    }
+    return w;
 }
