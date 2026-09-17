@@ -1,9 +1,9 @@
 /**
  * @file    encoder.h
- * @brief   Quadrature encoder interface — TIM2 (left) / TIM3 (right).
+ * @brief   Quadrature encoder interface.
  *
- * Pin mapping fix: Left uses PA0/PA1 (TIM2), Right uses PA6/PA7 (TIM3).
- * Previous version had both on PA6/PA7 causing conflicts.
+ * Left encoder:  TIM1, PA8/PA9
+ * Right encoder: TIM4, PB6/PB7
  */
 
 #ifndef ENCODER_H
@@ -15,7 +15,7 @@ extern "C" {
 
 #include <stdint.h>
 
-/** Initialize TIM2 and TIM3 in hardware encoder mode. */
+/** Initialize TIM1 (left) and TIM4 (right) in hardware encoder mode. */
 void encoder_init(void);
 
 /** Update encoder counts and speed (call at CONTROL_FREQ_HZ). */
