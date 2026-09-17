@@ -26,12 +26,11 @@ typedef struct {
 } RobotPose;
 
 /* ===================== TB6612FNG ===================== */
-/* TIM3 CH1/CH2 PWM */
 #define MOTOR_PWM_TIMER       TIM3
 #define MOTOR_PWMA_PORT       GPIOA
-#define MOTOR_PWMA_PIN        GPIO_PIN_6       /* PA6 TIM3_CH1 */
+#define MOTOR_PWMA_PIN        GPIO_PIN_6
 #define MOTOR_PWMB_PORT       GPIOA
-#define MOTOR_PWMB_PIN        GPIO_PIN_7       /* PA7 TIM3_CH2 */
+#define MOTOR_PWMB_PIN        GPIO_PIN_7
 #define MOTOR_AIN1_PORT       GPIOB
 #define MOTOR_AIN1_PIN        GPIO_PIN_12
 #define MOTOR_AIN2_PORT       GPIOB
@@ -46,13 +45,11 @@ typedef struct {
 #define MOTOR_PWM_FREQ        20000
 
 /* ===================== N20 Encoders ===================== */
-/* Left: TIM2 CH1/CH2 */
 #define ENC_LEFT_TIMER        TIM2
 #define ENC_LEFT_A_PORT       GPIOA
 #define ENC_LEFT_A_PIN        GPIO_PIN_0
 #define ENC_LEFT_B_PORT       GPIOA
 #define ENC_LEFT_B_PIN        GPIO_PIN_1
-/* Right: TIM4 CH1/CH2 */
 #define ENC_RIGHT_TIMER       TIM4
 #define ENC_RIGHT_A_PORT      GPIOB
 #define ENC_RIGHT_A_PIN       GPIO_PIN_6
@@ -66,17 +63,15 @@ typedef struct {
 #define MM_PER_TICK           ((3.14159265f * WHEEL_DIAMETER_MM) / ENCODER_TICKS_PER_REV)
 
 /* ===================== I2C BUS ===================== */
-/* OLED + MPU9250/MPU6500 share I2C1 */
 #define I2C1_SCL_PORT         GPIOB
 #define I2C1_SCL_PIN          GPIO_PIN_8
 #define I2C1_SDA_PORT         GPIOB
 #define I2C1_SDA_PIN          GPIO_PIN_9
-#define I2C_SPEED_HZ          400000U
+#define I2C_SPEED_HZ           400000U
 #define OLED_I2C_ADDR         (0x3C << 1)
 #define IMU_I2C_ADDR          (0x68 << 1)
 
 /* ===================== VL53L0X x4 ===================== */
-/* Four sensors share SDA/SCL. XSHUT gives each a unique address. */
 #define VL53_COUNT            4
 #define VL53_LEFT_XSHUT_PORT  GPIOA
 #define VL53_LEFT_XSHUT_PIN   GPIO_PIN_8
@@ -122,10 +117,13 @@ typedef enum {
 #define CONTROL_DT                0.001f
 
 /* ===================== KEY + 2 DIP ===================== */
-#define KEY_PORT                 GPIOC
-#define KEY_PIN                  GPIO_PIN_13
+/* PA0 = test push button, active-low. */
+#define KEY_PORT                 GPIOA
+#define KEY_PIN                  GPIO_PIN_0
+
+/* Two algorithm DIP switches, active-low. */
 #define DIP_ALG0_PORT            GPIOB
-#define DIP_ALG0_PIN             GPIO_PIN_2
+#define DIP_ALG0_PIN             GPIO_PIN_4
 #define DIP_ALG1_PORT            GPIOB
 #define DIP_ALG1_PIN             GPIO_PIN_3
 /* OFF/OFF=Flood Fill, ON/OFF=Left Wall, OFF/ON=Right Wall, ON/ON=A* */
