@@ -6,21 +6,17 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* Keep the diagnostic firmware on the STM32F401 HSI clock only.
+ * This removes PLL startup from the OLED/push-button test path. */
 static void SystemClock_Config(void)
 {
     RCC_OscInitTypeDef osc = {0};
     RCC_ClkInitTypeDef clk = {0};
 
-    /* STM32F401: HSI 16 MHz -> PLL -> 84 MHz SYSCLK. */
     osc.OscillatorType = RCC_OSCILLATORTYPE_HSI;
     osc.HSIState = RCC_HSI_ON;
     osc.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-    osc.PLL.PLLState = RCC_PLL_ON;
-    osc.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-    osc.PLL.PLLM = 16;
-    osc.PLL.PLLN = 168;
-    osc.PLL.PLLP = RCC_PLLP_DIV2;
-    osc.PLL.PLLQ = 4;
+    osc.PLL.PLLState = RCC_PLL_NONE;
 
     if (HAL_RCC_OscConfig(&osc) != HAL_OK) {
         Error_Handler();
@@ -28,37 +24,14 @@ static void SystemClock_Config(void)
 
     clk.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
                     RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
-    clk.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+    clk.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
     clk.AHBCLKDivider = RCC_SYSCLK_DIV1;
-    clk.APB1CLKDivider = RCC_HCLK_DIV2;
+    clk.APB1CLKDivider = RCC_HCLK_DIV1;
     clk.APB2CLKDivider = RCC_HCLK_DIV1;
 
-    if (HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_2) != HAL_OK) {
+    if (HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_0) != HAL_OK) {
         Error_Handler();
     }
-}
-
-static bool button_pressed(void)
-{
-    static GPIO_PinState stable = GPIO_PIN_SET;
-    static GPIO_PinState last_raw = GPIO_PIN_SET;
-    static uint32_t changed_at = 0;
-
-    GPIO_PinState raw = HAL_GPIO_ReadPin(KEY_PORT, KEY_PIN);
-    uint32_t now = HAL_GetTick();
-
-    if (raw != last_raw) {
-        last_raw = raw;
-        changed_at = now;
-    }
-
-    if ((now - changed_at) >= 30U && raw != stable) {
-        GPIO_PinState old = stable;
-        stable = raw;
-        return (old == GPIO_PIN_SET && stable == GPIO_PIN_RESET);
-    }
-
-    return false;
 }
 
 static void ui_gpio_init(void)
@@ -69,7 +42,7 @@ static void ui_gpio_init(void)
     __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_GPIOC_CLK_ENABLE();
 
-    /* PB4 = ALG0, PB3 = ALG1. Both DIP inputs are active-low. */
+    /* PB4 = ALG0, PB3 = ALG1. DIP switches are active-low. */
     g.Pin = DIP_ALG0_PIN | DIP_ALG1_PIN;
     g.Mode = GPIO_MODE_INPUT;
     g.Pull = GPIO_PULLUP;
@@ -92,33 +65,70 @@ static void ui_gpio_init(void)
     HAL_GPIO_WritePin(LED_PORT, LED_PIN, GPIO_PIN_SET);
 }
 
+static bool button_pressed_event(void)
+{
+    static GPIO_PinState previous = GPIO_PIN_SET;
+    GPIO_PinState now = HAL_GPIO_ReadPin(KEY_PORT, KEY_PIN);
+    bool pressed = (previous == GPIO_PIN_SET && now == GPIO_PIN_RESET);
+    previous = now;
+    return pressed;
+}
+
+static void show_diagnostic(void)
+{
+    AlgorithmConfig alg = algorithm_read_switches();
+    GPIO_PinState key = HAL_GPIO_ReadPin(KEY_PORT, KEY_PIN);
+
+    /* The OLED font supports letters and spaces; the algorithm name gives
+       us the DIP result while the key state is reflected in the LED. */
+    oled_show_algorithm(alg.alg_name, key == GPIO_PIN_RESET);
+}
+
 int main(void)
 {
     HAL_Init();
     SystemClock_Config();
     ui_gpio_init();
+
+    /* Allow the OLED power rail to settle before the first I2C transaction. */
+    HAL_Delay(1000);
+
     MX_I2C1_Init();
-    oled_init();
 
-    AlgorithmConfig selected = algorithm_read_switches();
-    oled_show_algorithm(selected.alg_name, false);
+    /* Retry OLED startup a few times to make cold-power-up behavior visible
+       without requiring an NRESET press. */
+    for (uint8_t i = 0; i < 3; i++) {
+        oled_init();
+        HAL_Delay(100);
+    }
 
+    show_diagnostic();
+
+    AlgorithmType shown = algorithm_read_switches().algorithm;
     bool led_on = false;
-    AlgorithmType shown = selected.algorithm;
+    uint32_t last_display = HAL_GetTick();
 
     while (1) {
-        /* Update OLED when either algorithm DIP switch changes. */
         AlgorithmConfig current = algorithm_read_switches();
+
+        /* Change the OLED immediately when the DIP selection changes. */
         if (current.algorithm != shown) {
             shown = current.algorithm;
-            oled_show_algorithm(current.alg_name, false);
+            show_diagnostic();
         }
 
-        /* PA0 button toggles the PC13 onboard LED once per press. */
-        if (button_pressed()) {
+        /* PA0 press toggles the active-low PC13 onboard LED. */
+        if (button_pressed_event()) {
             led_on = !led_on;
             HAL_GPIO_WritePin(LED_PORT, LED_PIN,
                               led_on ? GPIO_PIN_RESET : GPIO_PIN_SET);
+            show_diagnostic();
+        }
+
+        /* Refresh periodically so the diagnostic screen reflects PA0. */
+        if ((HAL_GetTick() - last_display) >= 250U) {
+            last_display = HAL_GetTick();
+            show_diagnostic();
         }
 
         HAL_Delay(10);
