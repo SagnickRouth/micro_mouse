@@ -2,6 +2,7 @@
 #include "config.h"
 #include "oled.h"
 #include "i2c.h"
+#include "timer.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -26,7 +27,7 @@ static void show_countdown_screen(uint8_t seconds);
 static void show_running_screen(void);
 static bool key_pressed_event(void);
 
-/* HSI 16 MHz, no PLL: keeps this diagnostic firmware simple and reliable. */
+/* 84 MHz system clock: provides a stable 84 MHz timer clock for TIM1/3/4. */
 static void SystemClock_Config(void)
 {
     RCC_OscInitTypeDef osc = {0};
@@ -35,18 +36,24 @@ static void SystemClock_Config(void)
     osc.OscillatorType = RCC_OSCILLATORTYPE_HSI;
     osc.HSIState = RCC_HSI_ON;
     osc.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-    osc.PLL.PLLState = RCC_PLL_NONE;
+    osc.PLL.PLLState = RCC_PLL_ON;
+    osc.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+    osc.PLL.PLLM = 16;
+    osc.PLL.PLLN = 336;
+    osc.PLL.PLLP = RCC_PLLP_DIV4;
+    osc.PLL.PLLQ = 7;
 
     if (HAL_RCC_OscConfig(&osc) != HAL_OK) Error_Handler();
 
     clk.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
                     RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
-    clk.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+    clk.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
     clk.AHBCLKDivider = RCC_SYSCLK_DIV1;
-    clk.APB1CLKDivider = RCC_HCLK_DIV1;
+    /* APB1 = 42 MHz; STM32F4 timers receive 2x APB1 clock = 84 MHz. */
+    clk.APB1CLKDivider = RCC_HCLK_DIV2;
     clk.APB2CLKDivider = RCC_HCLK_DIV1;
 
-    if (HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_0) != HAL_OK) Error_Handler();
+    if (HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_2) != HAL_OK) Error_Handler();
 }
 
 static void ui_gpio_init(void)
@@ -162,6 +169,7 @@ int main(void)
 
     HAL_Init();
     SystemClock_Config();
+    timer_gpio_and_peripheral_init();
     ui_gpio_init();
 
     /* Give the OLED supply time to settle on cold power-up. */
