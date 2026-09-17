@@ -32,6 +32,14 @@ typedef struct {
     const char *alg_name;
 } AlgorithmConfig;
 
+/*
+ * Two-switch algorithm selection using PB2 and PB3.
+ * Active-low switches:
+ *   OFF/OFF = Flood Fill
+ *   ON/OFF  = Left Wall
+ *   OFF/ON  = Right Wall
+ *   ON/ON   = A*
+ */
 AlgorithmConfig algorithm_read_switches(void);
 AlgorithmConfig algorithm_cycle_next(void);
 const AlgorithmConfig* algorithm_get_config(void);
