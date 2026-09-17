@@ -36,12 +36,8 @@ static void ui_gpio_init(void)
     __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_GPIOC_CLK_ENABLE();
 
-    /* Release PB3/PB4 from their normal debug/JTAG role and use them as GPIO.
-       SWD itself remains available on PA13/PA14. */
-    __HAL_RCC_SYSCFG_CLK_ENABLE();
-    HAL_SYSCFG_DisableFastModePlus(SYSCFG_PB3); /* harmless on F4 families that expose it */
-
-    /* PB4 = DIP0, PB3 = DIP1. External switches should connect to GND when ON. */
+    /* STM32F401: PB3/JTDO and PB4/NJTRST are released for GPIO by
+       configuring them in GPIO_MODER while SWD remains on PA13/PA14. */
     g.Pin = GPIO_PIN_3 | GPIO_PIN_4;
     g.Mode = GPIO_MODE_INPUT;
     g.Pull = GPIO_PULLUP;
@@ -95,9 +91,7 @@ int main(void)
     uint8_t old_dip = 0xFF;
 
     while (1) {
-        /* Read the physical PB4/PB3 pins directly for this diagnostic.
-           This deliberately bypasses algorithm.c so no other module can
-           affect the result. */
+        /* Read the physical PB4/PB3 pins directly for this diagnostic. */
         uint8_t dip = 0;
         if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_4) == GPIO_PIN_RESET) dip |= 1U;
         if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3) == GPIO_PIN_RESET) dip |= 2U;
@@ -107,8 +101,7 @@ int main(void)
             update_oled();
         }
 
-        /* Diagnostic mode: PC13 directly follows PA0.
-           PA0 released = LED OFF; PA0 pressed to GND = LED ON. */
+        /* PA0 released = LED OFF; PA0 pressed to GND = LED ON. */
         GPIO_PinState key = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0);
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13,
                           (key == GPIO_PIN_RESET) ? GPIO_PIN_RESET : GPIO_PIN_SET);
