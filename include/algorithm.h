@@ -33,7 +33,7 @@ typedef struct {
 } AlgorithmConfig;
 
 /*
- * Two-switch algorithm selection using PB2 and PB3.
+ * Two-switch algorithm selection using PB4 and PB3.
  * Active-low switches:
  *   OFF/OFF = Flood Fill
  *   ON/OFF  = Left Wall
