@@ -6,6 +6,38 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+static void SystemClock_Config(void)
+{
+    RCC_OscInitTypeDef osc = {0};
+    RCC_ClkInitTypeDef clk = {0};
+
+    /* STM32F401: HSI 16 MHz -> PLL -> 84 MHz SYSCLK. */
+    osc.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+    osc.HSIState = RCC_HSI_ON;
+    osc.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+    osc.PLL.PLLState = RCC_PLL_ON;
+    osc.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+    osc.PLL.PLLM = 16;
+    osc.PLL.PLLN = 168;
+    osc.PLL.PLLP = RCC_PLLP_DIV2;
+    osc.PLL.PLLQ = 4;
+
+    if (HAL_RCC_OscConfig(&osc) != HAL_OK) {
+        Error_Handler();
+    }
+
+    clk.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
+                    RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+    clk.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+    clk.AHBCLKDivider = RCC_SYSCLK_DIV1;
+    clk.APB1CLKDivider = RCC_HCLK_DIV2;
+    clk.APB2CLKDivider = RCC_HCLK_DIV1;
+
+    if (HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_2) != HAL_OK) {
+        Error_Handler();
+    }
+}
+
 static bool button_pressed(void)
 {
     static GPIO_PinState stable = GPIO_PIN_SET;
@@ -95,7 +127,6 @@ int main(void)
 
 void Error_Handler(void)
 {
-    __disable_irq();
     while (1) {
         HAL_GPIO_TogglePin(LED_PORT, LED_PIN);
         HAL_Delay(250);
