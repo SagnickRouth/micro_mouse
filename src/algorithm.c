@@ -23,7 +23,7 @@ static bool gpio_read_active_low(GPIO_TypeDef *port, uint16_t pin)
  * Two physical DIP switches select one of four algorithms.
  * Both switches are active-low and use the pins defined in config.h:
  *
- *   PB2 (ALG0)   PB3 (ALG1)   Algorithm
+ *   PB4 (ALG0)   PB3 (ALG1)   Algorithm
  *   ------------------------------------
  *     OFF          OFF        Flood Fill
  *     ON           OFF        Left Wall
