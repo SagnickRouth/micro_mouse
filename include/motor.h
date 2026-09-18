@@ -1,6 +1,6 @@
 /**
- * @file    motor.h
- * @brief   Motor driver interface (TB6612FNG).
+ * @file motor.h
+ * @brief Motor driver interface (TB6612FNG).
  */
 
 #ifndef MOTOR_H
@@ -12,7 +12,7 @@ extern "C" {
 
 #include <stdint.h>
 
-/** Initialize motor GPIO and PWM (TIM1). */
+/** Initialize motor GPIO state and start PWM (TIM3). */
 void motor_init(void);
 
 /** Set left motor speed. Positive = forward, negative = backward. */
@@ -27,7 +27,7 @@ void motor_enable(void);
 /** Disable motor driver (STBY low). */
 void motor_disable(void);
 
-/** Brake both motors (short both H-bridges). */
+/** Apply active braking to both motors. */
 void motor_brake(void);
 
 #ifdef __cplusplus
