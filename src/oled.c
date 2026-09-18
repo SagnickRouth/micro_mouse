@@ -2,6 +2,7 @@
 #include "i2c.h"
 #include "stm32f4xx_hal.h"
 #include <string.h>
+#include <stdio.h>
 
 #define OLED_ADDR   OLED_I2C_ADDR
 #define OLED_W      128
@@ -46,6 +47,14 @@ static void pixel(int x, int y)
     fb[x + (y / 8) * OLED_W] |= (uint8_t)(1u << (y & 7));
 }
 
+static const uint8_t digits5x7[10][5] = {
+    {0x3E,0x51,0x49,0x45,0x3E},{0x00,0x42,0x7F,0x40,0x00},
+    {0x42,0x61,0x51,0x49,0x46},{0x21,0x41,0x45,0x4B,0x31},
+    {0x18,0x14,0x12,0x7F,0x10},{0x27,0x45,0x45,0x45,0x39},
+    {0x3C,0x4A,0x49,0x49,0x30},{0x01,0x71,0x09,0x05,0x03},
+    {0x36,0x49,0x49,0x49,0x36},{0x06,0x49,0x49,0x29,0x1E}
+};
+
 static void text(const char *s, int x, int y, int scale)
 {
     while (*s) {
@@ -54,13 +63,20 @@ static void text(const char *s, int x, int y, int scale)
             x += 6 * scale;
             continue;
         }
-        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '*') {
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') || c == '*' || c == ':' || c == '-') {
             char cc = c;
             if (cc >= 'a' && cc <= 'z') cc = (char)(cc - 'a' + 'A');
             for (int col = 0; col < 5; col++) {
                 for (int row = 0; row < 7; row++) {
                     bool on;
-                    if (cc == '*') {
+                    if (cc >= '0' && cc <= '9') {
+                        on = (digits5x7[cc - '0'][col] & (1u << row)) != 0;
+                    } else if (cc == ':') {
+                        on = (col == 2) && (row == 1 || row == 5);
+                    } else if (cc == '-') {
+                        on = (row == 3 && col >= 1 && col <= 3);
+                    } else if (cc == '*') {
                         on = (col == 2) || (row == 2 && (col == 0 || col == 4)) ||
                              (row == 0 && col == 2);
                     } else {
@@ -116,6 +132,28 @@ void oled_show_algorithm(const char *name, bool running)
     text("ALGORITHM", 20, 4, 2);
     text(name, 20, 25, 2);
     text(running ? "RUNNING" : "READY", 28, 48, 1);
+    refresh();
+}
+
+void oled_show_hardware_test(bool button_pressed, uint8_t dip,
+                            const char *algorithm,
+                            const char *left_count,
+                            const char *right_count)
+{
+    memset(fb, 0, sizeof(fb));
+
+    text("MCU OK", 2, 0, 1);
+    text("OLED OK", 68, 0, 1);
+    text(button_pressed ? "BTN PRESS" : "BTN RELEASE", 2, 13, 1);
+
+    char dip_line[16];
+    snprintf(dip_line, sizeof(dip_line), "DIP:%u %s",
+             (unsigned)(dip & 3U), algorithm);
+    text(dip_line, 2, 25, 1);
+
+    text(left_count, 2, 39, 1);
+    text(right_count, 68, 39, 1);
+
     refresh();
 }
 
